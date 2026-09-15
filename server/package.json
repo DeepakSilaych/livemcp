@@ -1,13 +1,13 @@
 {
   "name": "livemcp",
-  "version": "1.3.0",
-  "description": "MCP server that gives AI direct access to your real browser — tabs, cookies, session state, and all.",
+  "version": "2.0.0",
+  "description": "MCP server that gives AI direct access to your real browser \u2014 tabs, cookies, session state, and all.",
   "type": "module",
   "license": "MIT",
   "author": "Deepak Silaych",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/DeepakSilaych/chrome-mcp.git",
+    "url": "https://github.com/DeepakSilaych/livemcp.git",
     "directory": "server"
   },
   "keywords": [

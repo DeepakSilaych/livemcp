@@ -1,14 +1,9 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { Bridge } from "../bridge.js";
-import { bridgeCall, tabSpecSchema } from "./helpers.js";
-
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { Bridge } from '../bridge.js';
+import { tabSpecSchema } from './helpers.js';
+import { imageResult, errText } from '../toolResult.js';
 export function registerScreenshotTools(mcp: McpServer, bridge: Bridge): void {
-  mcp.registerTool(
-    "take_screenshot",
-    {
-      description: "Capture the visible area of a tab as PNG base64 data URL",
-      inputSchema: { ...tabSpecSchema },
-    },
-    async (args) => bridgeCall(bridge, "screenshot.capture", { tabId: args.tabId, tabUrl: args.tabUrl, tabTitle: args.tabTitle }),
-  );
+  mcp.registerTool('take_screenshot', { description: 'Return a viewport image of the target active tab. Use for visual/layout tasks or ambiguous DOM state. Does not switch tabs.', inputSchema: tabSpecSchema }, async args => {
+    try { return imageResult(await bridge.request('screenshot.capture', args)); } catch (e) { return errText(String(e)); }
+  });
 }

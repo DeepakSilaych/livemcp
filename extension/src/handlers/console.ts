@@ -13,5 +13,5 @@ export async function stopCapture(params: Record<string, unknown>): Promise<unkn
 export async function getLogs(params: Record<string, unknown>): Promise<unknown> {
   const tabId = params.tabId as number;
   const clearAfter = Boolean(params.clearAfter);
-  return dbg.getConsole(tabId, clearAfter);
+  return dbg.getConsole(tabId, clearAfter, params);
 }

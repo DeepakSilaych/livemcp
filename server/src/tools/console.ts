@@ -27,10 +27,14 @@ export function registerConsoleTools(mcp: McpServer, bridge: Bridge): void {
       inputSchema: {
         tabId: z.number().int().positive(),
         clearAfter: z.boolean().optional(),
+        level: z.string().optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+        offset: z.number().int().nonnegative().optional(),
       },
     },
     async (args) =>
       bridgeCall(bridge, "console.getLogs", {
+        ...args,
         tabId: args.tabId,
         clearAfter: args.clearAfter ?? false,
       }),

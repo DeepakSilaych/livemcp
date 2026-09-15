@@ -1,23 +1,32 @@
 {
   "private": true,
-  "name": "livemcp",
+  "name": "livemcp-workspace",
   "description": "MCP server that gives AI direct access to your real browser tabs",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "license": "MIT",
   "author": "Deepak Silaych",
   "repository": {
     "type": "git",
-    "url": "https://github.com/DeepakSilaych/chrome-mcp"
+    "url": "https://github.com/DeepakSilaych/livemcp.git"
   },
-  "workspaces": ["shared", "server", "extension"],
+  "workspaces": [
+    "shared",
+    "server",
+    "extension"
+  ],
   "scripts": {
     "build": "npm run build:server && npm run build:extension",
     "build:server": "npm run compile -w livemcp",
     "build:extension": "npm run compile -w @livemcp/extension",
     "hub": "node server/dist/hub.js",
-    "verify-ws": "node server/scripts/verify-ws.mjs"
+    "verify-ws": "node server/scripts/verify-ws.mjs",
+    "typecheck": "tsc -p extension --noEmit && tsc -p server --noEmit",
+    "test": "playwright test"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
   }
 }

@@ -1,4 +1,6 @@
-import { executeScript, resolveTabSpec, tabsGet, tabsUpdate, type TabSpec } from "../chromeApi.js";
+import { afterAction, runPage } from "../observation.js";
+import { navigationWait, waitVisible, documentReady } from "../waits.js";
+import { resolveTabSpec, tabsUpdate, type TabSpec } from "../chromeApi.js";
 
 export async function navigateTo(params: Record<string, unknown>): Promise<unknown> {
   const url = params.url as string;
@@ -8,47 +10,19 @@ export async function navigateTo(params: Record<string, unknown>): Promise<unkno
 }
 
 export async function navigateAndWait(params: Record<string, unknown>): Promise<unknown> {
-  const url = params.url as string;
-  const waitFor = params.waitFor as string | undefined;
-  const timeoutMs = (params.timeout as number | undefined) ?? 10_000;
   const tabId = await resolveTabSpec(params as TabSpec);
-
-  await tabsUpdate(tabId, { url });
-
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(listener);
-      reject(new Error(`Navigation timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-
-    function listener(updatedId: number, info: chrome.tabs.TabChangeInfo) {
-      if (updatedId === tabId && info.status === "complete") {
-        clearTimeout(timer);
-        chrome.tabs.onUpdated.removeListener(listener);
-        resolve();
-      }
-    }
-    chrome.tabs.onUpdated.addListener(listener);
-  });
-
-  if (waitFor) {
-    await executeScript(
-      tabId,
-      (sel: string, ms: number) =>
-        new Promise<boolean>((resolve, reject) => {
-          if (document.querySelector(sel)) { resolve(true); return; }
-          const obs = new MutationObserver(() => {
-            if (document.querySelector(sel)) { obs.disconnect(); resolve(true); }
-          });
-          obs.observe(document.documentElement, { childList: true, subtree: true });
-          setTimeout(() => { obs.disconnect(); reject(new Error(`waitFor "${sel}" timed out`)); }, ms);
-        }),
-      [waitFor, timeoutMs],
-    );
-  }
-
-  const tab = await tabsGet(tabId);
-  return { tabId, url: tab.url, title: tab.title };
+  const pinned = { ...params, tabId };
+  const timeout = Math.min(25000, Number(params.timeout ?? 10000)), deadline = Date.now() + timeout;
+  const before = params.waitUntil === "domcontentloaded" ? await runPage({ ...pinned, frameId: 0 }, "identity") : null;
+  const wait = navigationWait(tabId, timeout);
+  try {
+    await tabsUpdate(tabId, { url: params.url as string });
+    if (before) await documentReady(pinned, before, deadline);
+    else await wait.promise;
+    await waitVisible(pinned, deadline);
+    return afterAction(pinned, { tabId, navigated: true });
+  } catch (e) { return afterAction(pinned, { tabId, error: String(e), actionMayHaveOccurred: true }); }
+  finally { wait.cancel(); }
 }
 
 export async function goBack(params: Record<string, unknown>): Promise<unknown> {

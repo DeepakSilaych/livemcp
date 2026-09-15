@@ -13,5 +13,7 @@ export async function stopCapture(params: Record<string, unknown>): Promise<unkn
 export async function getCaptured(params: Record<string, unknown>): Promise<unknown> {
   const tabId = params.tabId as number;
   const clearAfter = Boolean(params.clearAfter);
-  return dbg.getNetwork(tabId, clearAfter);
+  return dbg.getNetwork(tabId, clearAfter, params);
 }
+
+export async function getBody(params: Record<string, unknown>): Promise<unknown> { return dbg.getBody(Number(params.tabId), String(params.requestId), Number(params.maxChars ?? 12000)); }

@@ -12,7 +12,7 @@ const basePort = Number(process.env.LIVEMCP_PORT ?? DEFAULT_WS_PORT) || DEFAULT_
 type IpcRegister   = { type: "register";   sessionId: string };
 type IpcUnregister = { type: "unregister"; sessionId: string };
 type IpcRequest    = { type: "request";    sessionId: string; id: string; action: string; params?: Record<string, unknown> };
-type IpcMessage    = IpcRegister | IpcUnregister | IpcRequest;
+type IpcMessage    = IpcRegister | IpcUnregister | IpcRequest | { type: "cancel"; sessionId: string; id: string };
 
 // hub → session
 type IpcRegistered = { type: "registered"; sessionId: string };
@@ -22,7 +22,16 @@ type IpcResponse   = { type: "response";   id: string; result?: unknown; error?:
 let extensionWs: WebSocket | null = null;
 let pingTimer: ReturnType<typeof setInterval> | undefined;
 const sessions = new Map<string, Socket>(); // sessionId → IPC socket
-const pending  = new Map<string, string>(); // requestId → sessionId
+const pending = new Map<string, { sessionId: string; timer: ReturnType<typeof setTimeout> }>();
+function finishPending(id: string, error?: string): void {
+  const entry = pending.get(id);
+  if (!entry) return;
+  clearTimeout(entry.timer); pending.delete(id);
+  if (error) sendToSession(entry.sessionId, { type: 'response', id, error });
+}
+function clearSession(sessionId: string): void {
+  for (const [id, entry] of pending) if (entry.sessionId === sessionId) finishPending(id);
+}
 
 function sendToSession(sessionId: string, msg: IpcRegistered | IpcStatus | IpcResponse): void {
   const sock = sessions.get(sessionId);
@@ -66,7 +75,10 @@ function startWss(port: number): void {
   });
 
   wss.on("connection", (ws) => {
-    if (extensionWs?.readyState === WebSocket.OPEN) extensionWs.close();
+    if (extensionWs?.readyState === WebSocket.OPEN) {
+      for (const id of pending.keys()) finishPending(id, "Extension replaced; inspect browser state before retrying.");
+      extensionWs.close();
+    }
     if (pingTimer) clearInterval(pingTimer);
 
     extensionWs = ws;
@@ -84,15 +96,17 @@ function startWss(port: number): void {
       if (!isBridgeResponse(parsed)) return;
 
       const res = parsed as BridgeResponse;
-      const sessionId = pending.get(res.id);
-      if (!sessionId) return;
-      pending.delete(res.id);
+      const entry = pending.get(res.id);
+      if (!entry || extensionWs !== ws) return;
+      const sessionId = entry.sessionId;
+      finishPending(res.id);
       sendToSession(sessionId, { type: "response", id: res.id, result: res.result, error: res.error });
     });
 
     const onClose = () => {
       if (extensionWs !== ws) return;
       extensionWs = null;
+      for (const id of pending.keys()) finishPending(id, "Extension disconnected; action outcome may be unknown.");
       if (pingTimer) { clearInterval(pingTimer); pingTimer = undefined; }
       process.stderr.write("[livemcp-hub] Chrome extension disconnected\n");
       broadcastStatus();
@@ -109,6 +123,7 @@ if (existsSync(HUB_SOCK)) {
 }
 
 const ipcServer = createNetServer((sock) => {
+  sock.setEncoding('utf8');
   let buf = "";
 
   sock.on("data", (chunk) => {
@@ -128,16 +143,21 @@ const ipcServer = createNetServer((sock) => {
         process.stderr.write(`[livemcp-hub] Session registered: ${msg.sessionId} (${sessions.size} active)\n`);
 
       } else if (msg.type === "unregister") {
+        clearSession(msg.sessionId);
         sessions.delete(msg.sessionId);
         process.stderr.write(`[livemcp-hub] Session unregistered: ${msg.sessionId} (${sessions.size} active)\n`);
 
+      } else if (msg.type === 'cancel') {
+        if (sessions.get(msg.sessionId) === sock && pending.get(msg.id)?.sessionId === msg.sessionId) finishPending(msg.id);
       } else if (msg.type === "request") {
+        if (sessions.get(msg.sessionId) !== sock) continue;
+        if (pending.size >= 1000) { sendToSession(msg.sessionId, { type: 'response', id: msg.id, error: 'Hub busy; retry later.' }); continue; }
         if (!extensionWs || extensionWs.readyState !== WebSocket.OPEN) {
           sendToSession(msg.sessionId, { type: "response", id: msg.id, error: "Chrome extension not connected to hub" });
           return;
         }
-        pending.set(msg.id, msg.sessionId);
-        const req: BridgeRequest = { id: msg.id, action: msg.action as BridgeRequest["action"], params: msg.params };
+        pending.set(msg.id, { sessionId: msg.sessionId, timer: setTimeout(() => finishPending(msg.id, "Bridge deadline exceeded; inspect state before retrying."), 29000) });
+        const req: BridgeRequest = { id: msg.id, action: msg.action as BridgeRequest["action"], params: { ...msg.params, __deadline: Date.now() + 28000 } };
         extensionWs.send(JSON.stringify(req));
       }
     }
@@ -146,6 +166,7 @@ const ipcServer = createNetServer((sock) => {
   sock.on("close", () => {
     for (const [sessionId, s] of sessions) {
       if (s === sock) {
+        clearSession(sessionId);
         sessions.delete(sessionId);
         process.stderr.write(`[livemcp-hub] Session disconnected: ${sessionId} (${sessions.size} active)\n`);
       }

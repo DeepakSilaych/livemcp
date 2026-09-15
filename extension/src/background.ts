@@ -32,19 +32,22 @@ async function readPort(): Promise<number> {
   return typeof wsPort === "number" && wsPort > 0 && wsPort < 65536 ? wsPort : DEFAULT_WS_PORT;
 }
 
-function send(res: BridgeResponse): void {
+function send(res: BridgeResponse): number {
   if (socket && socket.readyState === WebSocket.OPEN) {
     const payload =
       res.error !== undefined
         ? { id: res.id, error: res.error }
         : { id: res.id, result: res.result === undefined ? null : res.result };
-    socket.send(JSON.stringify(payload));
+    const encoded = JSON.stringify(payload);
+    socket.send(encoded);
+    return new TextEncoder().encode(encoded).byteLength;
   }
+  return 0;
 }
 
 const MAX_LOG_ENTRIES = 50;
 
-type LogEntry = { action: string; ok: boolean; error?: string; ms: number; ts: number };
+type LogEntry = { action: string; ok: boolean; error?: string; ms: number; bytes?: number; ts: number };
 
 async function appendLog(entry: LogEntry): Promise<void> {
   const { toolLog } = await chrome.storage.local.get(["toolLog"]);
@@ -71,8 +74,8 @@ async function handleMessage(raw: string): Promise<void> {
   try {
     const result = await dispatch(data.action, data.params ?? {});
     const ms = Math.round(performance.now() - t0);
-    send({ id: data.id, result });
-    void appendLog({ action: data.action, ok: true, ms, ts: Date.now() });
+    const bytes = send({ id: data.id, result });
+    void appendLog({ action: data.action, ok: true, ms, bytes, ts: Date.now() });
   } catch (e) {
     const ms = Math.round(performance.now() - t0);
     const msg = e instanceof Error ? e.message : String(e);
