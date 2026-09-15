@@ -36,7 +36,7 @@ export function tabsUpdate(tabId: number, props: chrome.tabs.UpdateProperties): 
 
 export function tabsRemove(tabIds: number | number[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    chrome.tabs.remove(tabIds, () => {
+    chrome.tabs.remove(Array.isArray(tabIds) ? tabIds : [tabIds], () => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
       } else {
@@ -62,11 +62,12 @@ export function executeScript<TArgs extends unknown[], TResult>(
   tabId: number,
   func: (...args: TArgs) => TResult,
   args: TArgs,
+  frameId = 0,
 ): Promise<TResult> {
   return new Promise((resolve, reject) => {
     chrome.scripting.executeScript(
       {
-        target: { tabId },
+        target: { tabId, frameIds: [frameId] },
         func,
         args,
       },
@@ -74,8 +75,10 @@ export function executeScript<TArgs extends unknown[], TResult>(
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
         } else {
-          const first = results?.[0]?.result as TResult;
-          resolve(first);
+          const entry = results?.[0];
+          if (!entry || (entry as any).error) { reject(new Error(String((entry as any)?.error ?? "Script returned no result"))); return; }
+          if ((entry.result as any)?.__livemcpError) { reject(new Error((entry.result as any).__livemcpError)); return; }
+          resolve(entry.result as TResult);
         }
       },
     );
@@ -98,12 +101,12 @@ export async function resolveTabSpec(spec: TabSpec): Promise<number> {
     const all = await tabsQuery({});
     const needle_url = spec.tabUrl?.toLowerCase();
     const needle_title = spec.tabTitle?.toLowerCase();
-    const tab = all.find((t) => {
-      if (needle_url && t.url?.toLowerCase().includes(needle_url)) return true;
-      if (needle_title && t.title?.toLowerCase().includes(needle_title)) return true;
-      return false;
+    const matches = all.filter((t) => {
+      return (!needle_url || Boolean(t.url?.toLowerCase().includes(needle_url))) && (!needle_title || Boolean(t.title?.toLowerCase().includes(needle_title)));
     });
-    if (!tab?.id) {
+    if (matches.length > 1) throw new Error(`Ambiguous tab target. Choose tabId from: ${JSON.stringify(matches.map(tabSummary))}`);
+    const tab = matches[0];
+    if (tab?.id == null) {
       throw new Error(`No tab found matching ${spec.tabUrl ? `url="${spec.tabUrl}"` : `title="${spec.tabTitle}"`}`);
     }
     return tab.id;

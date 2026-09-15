@@ -17,6 +17,7 @@ export const BRIDGE_ACTIONS = [
   "network.startCapture",
   "network.stopCapture",
   "network.getCaptured",
+  "network.getBody",
   "console.startCapture",
   "console.stopCapture",
   "console.getLogs",
@@ -28,6 +29,8 @@ export const BRIDGE_ACTIONS = [
   "cookies.get",
   "cookies.getLocalStorage",
   "page.snapshot",
+  "browser.batch",
+  "browser.frames",
 ] as const;
 
 export type BridgeAction = (typeof BRIDGE_ACTIONS)[number];

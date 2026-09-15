@@ -5,6 +5,7 @@ type NetRecord = {
   status?: number;
   responseHeaders?: Record<string, string>;
   body?: string;
+  mimeType?: string;
 };
 
 type LogRecord = { text: string; level?: string; source?: string };
@@ -14,6 +15,8 @@ type TabCapture = {
   consoleOn: boolean;
   requests: Map<string, NetRecord>;
   logs: LogRecord[];
+  droppedRequests: number;
+  droppedLogs: number;
 };
 
 const tabState = new Map<number, TabCapture>();
@@ -22,7 +25,7 @@ const attachedTabs = new Set<number>();
 function getState(tabId: number): TabCapture {
   let s = tabState.get(tabId);
   if (!s) {
-    s = { networkOn: false, consoleOn: false, requests: new Map(), logs: [] };
+    s = { networkOn: false, consoleOn: false, requests: new Map(), logs: [], droppedRequests: 0, droppedLogs: 0 };
     tabState.set(tabId, s);
   }
   return s;
@@ -78,28 +81,26 @@ function bindListener(): void {
     if (st.networkOn && method === "Network.requestWillBeSent") {
       const p = params as { requestId: string; request?: { url: string; method: string } };
       const cur = st.requests.get(p.requestId) ?? { requestId: p.requestId };
-      cur.url = p.request?.url;
+      cur.url = p.request?.url?.slice(0, 2048);
       cur.method = p.request?.method;
       st.requests.set(p.requestId, cur);
+      if (st.requests.size > 500) { st.requests.delete(st.requests.keys().next().value!); st.droppedRequests++; }
     }
     if (st.networkOn && method === "Network.responseReceived") {
       const p = params as {
         requestId: string;
-        response?: { status: number; headers?: Record<string, string> };
+        response?: { status: number; headers?: Record<string, string>; mimeType?: string };
       };
       const cur = st.requests.get(p.requestId) ?? { requestId: p.requestId };
       cur.status = p.response?.status;
-      cur.responseHeaders = p.response?.headers;
+      cur.mimeType = p.response?.mimeType;
       st.requests.set(p.requestId, cur);
-    }
-    if (st.networkOn && method === "Network.loadingFinished") {
-      const p = params as { requestId: string };
-      void loadBody(tabId, p.requestId);
+      if (st.requests.size > 500) { st.requests.delete(st.requests.keys().next().value!); st.droppedRequests++; }
     }
     if (st.consoleOn && method === "Log.entryAdded") {
       const p = params as { entry?: { text?: string; level?: string; source?: string } };
       st.logs.push({
-        text: p.entry?.text ?? "",
+        text: (p.entry?.text ?? "").slice(0, 2000),
         level: p.entry?.level,
         source: p.entry?.source,
       });
@@ -117,40 +118,36 @@ function bindListener(): void {
         })
         .filter(Boolean)
         .join(" ");
-      st.logs.push({ text, level: p.type, source: "console.api" });
+      st.logs.push({ text: text.slice(0, 2000), level: p.type, source: "console.api" });
     }
+    if (st.logs.length > 500) { st.droppedLogs += st.logs.length - 500; st.logs.splice(0, st.logs.length - 500); }
   });
   chrome.debugger.onDetach.addListener((source) => {
     const tabId = source.tabId;
     if (tabId != null) {
       attachedTabs.delete(tabId);
-      tabState.delete(tabId);
+      // Keep bounded records readable after capture stops.
+      const st = tabState.get(tabId);
+      if (st) { st.networkOn = false; st.consoleOn = false; }
     }
   });
+  chrome.tabs.onRemoved.addListener(id => { tabState.delete(id); attachedTabs.delete(id); });
 }
 
-async function loadBody(tabId: number, requestId: string): Promise<void> {
-  const st = tabState.get(tabId);
-  if (!st) return;
-  try {
-    const raw = (await sendDebuggerCommand(tabId, "Network.getResponseBody", {
-      requestId,
-    })) as { body: string; base64Encoded: boolean };
-    const cur = st.requests.get(requestId);
-    if (cur) {
-      cur.body = raw.base64Encoded ? `[base64:${raw.body.length}]` : raw.body;
-    }
-  } catch {
-    const cur = st.requests.get(requestId);
-    if (cur) cur.body = "[body unavailable]";
-  }
+export async function getBody(tabId: number, requestId: string, maxChars = 12000): Promise<unknown> {
+  const record = tabState.get(tabId)?.requests.get(requestId);
+  if (!record) throw new Error('Request missing or evicted from capture buffer.');
+  if (record.mimeType && !/text|json|xml|javascript|graphql/.test(record.mimeType)) return { requestId, omitted: 'Non-text response', mimeType: record.mimeType };
+  const raw = await sendDebuggerCommand(tabId, 'Network.getResponseBody', { requestId }) as { body: string; base64Encoded: boolean };
+  const limit = Math.min(50000, Math.max(100, maxChars));
+  return { requestId, body: raw.base64Encoded ? '[binary omitted]' : raw.body.slice(0, limit), truncated: raw.body.length > limit, totalChars: raw.body.length };
 }
 
 export async function startNetwork(tabId: number): Promise<{ ok: true }> {
   bindListener();
   const st = getState(tabId);
   st.networkOn = true;
-  st.requests.clear();
+  st.requests.clear(); st.droppedRequests = 0;
   await attachTab(tabId);
   return { ok: true };
 }
@@ -161,25 +158,32 @@ export async function stopNetwork(tabId: number): Promise<{ ok: true }> {
     st.networkOn = false;
     if (!st.consoleOn) {
       await detachTab(tabId);
-      tabState.delete(tabId);
     }
   }
   return { ok: true };
 }
 
-export function getNetwork(tabId: number, clearAfter: boolean): NetRecord[] {
+export function getNetwork(tabId: number, clearAfter: boolean, options: Record<string, unknown> = {}): unknown {
   const st = tabState.get(tabId);
-  if (!st) return [];
-  const out = [...st.requests.values()];
-  if (clearAfter) st.requests.clear();
-  return out;
+  const filtered = [...(st?.requests.values() ?? [])].filter(r => !options.url || r.url?.includes(String(options.url)));
+  const limit = Math.min(100, Math.max(1, Number(options.limit ?? 50)));
+  const offset = Math.max(0, Number(options.offset ?? 0));
+  const requests: NetRecord[] = [];
+  let chars = 0;
+  for (const { responseHeaders: _headers, body: _body, ...entry } of filtered.slice(offset, offset + limit)) {
+    const size = JSON.stringify(entry).length;
+    if (chars + size > 12000) break;
+    requests.push(entry); chars += size;
+  }
+  if (clearAfter && st) for (const r of requests) st.requests.delete(r.requestId);
+  return { requests, total: filtered.length, truncated: filtered.length > offset + requests.length, nextOffset: filtered.length > offset + requests.length ? (clearAfter ? offset : offset + requests.length) : null, dropped: st?.droppedRequests ?? 0 };
 }
 
 export async function startConsole(tabId: number): Promise<{ ok: true }> {
   bindListener();
   const st = getState(tabId);
   st.consoleOn = true;
-  st.logs = [];
+  st.logs = []; st.droppedLogs = 0;
   await attachTab(tabId);
   return { ok: true };
 }
@@ -190,16 +194,21 @@ export async function stopConsole(tabId: number): Promise<{ ok: true }> {
     st.consoleOn = false;
     if (!st.networkOn) {
       await detachTab(tabId);
-      tabState.delete(tabId);
     }
   }
   return { ok: true };
 }
 
-export function getConsole(tabId: number, clearAfter: boolean): LogRecord[] {
-  const st = tabState.get(tabId);
-  if (!st) return [];
-  const out = [...st.logs];
-  if (clearAfter) st.logs = [];
-  return out;
+export function getConsole(tabId: number, clearAfter: boolean, options: Record<string, unknown> = {}): unknown {
+  const st = tabState.get(tabId), all = st?.logs ?? [];
+  const filtered = all.filter(l => !options.level || l.level === options.level);
+  const limit = Math.min(100, Math.max(1, Number(options.limit ?? 50))), offset = Math.max(0, Number(options.offset ?? 0));
+  const logs: LogRecord[] = [];
+  let chars = 0;
+  for (const entry of filtered.slice(offset, offset + limit)) {
+    if (chars + entry.text.length > 12000) break;
+    logs.push(entry); chars += entry.text.length;
+  }
+  if (clearAfter && st) { const read = new Set(logs); st.logs = all.filter(l => !read.has(l)); }
+  return { logs, total: filtered.length, truncated: filtered.length > offset + logs.length, nextOffset: filtered.length > offset + logs.length ? (clearAfter ? offset : offset + logs.length) : null, dropped: st?.droppedLogs ?? 0 };
 }

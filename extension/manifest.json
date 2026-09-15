@@ -1,10 +1,19 @@
 {
   "manifest_version": 3,
   "name": "LiveMCP Bridge",
-  "version": "1.2.1",
-  "description": "Bridge extension for LiveMCP — gives AI direct access to your real browser",
-  "permissions": ["tabs", "activeTab", "scripting", "cookies", "debugger", "storage"],
-  "host_permissions": ["<all_urls>"],
+  "version": "2.0.0",
+  "description": "Bridge extension for LiveMCP \u2014 gives AI direct access to your real browser",
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "scripting",
+    "cookies",
+    "debugger",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "icons": {
     "16": "assets/icon-16.png",
     "48": "assets/icon-48.png",

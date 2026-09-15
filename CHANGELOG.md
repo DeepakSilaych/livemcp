@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.0.0] – 2026-09-15
+
+Browser workflow overhaul: persistent refs, bounded/delta observations, action-plus-state results, sequential batches, frame/shadow support, correct screenshot images, race-free waits, form ownership, bounded capture and transport recovery. Result contracts changed; see README migration notes.
+
 ## [1.3.0] – 2026-06-19
 
 ### Added
