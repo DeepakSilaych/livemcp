@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.0] – 2026-09-16
+
+- Full server URL configuration with WS/WSS, HTTP(S) conversion, reverse-proxy paths, query preservation and saved-port compatibility.
+- Named browser profiles with persistent IDs, concurrent hub connections, `list_browsers` and per-session `select_browser`.
+- Connection-bound response routing, disconnect isolation and retained browser selection across hub reconnects.
+- Original green branding retained; CI remains removed.
+
+
 ## [2.0.0] – 2026-09-15
 
 Browser workflow overhaul: persistent refs, bounded/delta observations, action-plus-state results, sequential batches, frame/shadow support, correct screenshot images, race-free waits, form ownership, bounded capture and transport recovery. Result contracts changed; see README migration notes.

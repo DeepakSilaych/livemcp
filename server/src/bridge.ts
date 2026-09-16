@@ -10,6 +10,8 @@ type Pending = {
 };
 
 export type Bridge = {
+  listBrowsers?: () => Promise<unknown>;
+  selectBrowser?: (browserId: string) => Promise<unknown>;
   isConnected: () => boolean;
   request: (action: BridgeAction, params: Record<string, unknown>) => Promise<unknown>;
   close: () => Promise<void>;

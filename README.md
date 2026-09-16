@@ -16,7 +16,7 @@ npm run build
 npm run hub
 ```
 
-Load `extension/` as an unpacked extension from `chrome://extensions`, then click **Connect** in its popup. Configure your MCP client:
+Load `extension/` as an unpacked extension from `chrome://extensions`, enter the hub’s full **Server URL** and a **Browser name**, then click **Connect** in its popup. For a local hub use `ws://127.0.0.1:17691`; for a remote reverse proxy use an endpoint such as `wss://bridge.example.com/browser`. New installs leave the URL empty instead of assuming localhost. Existing explicitly saved ports remain compatible. HTTP(S) URLs are converted to WS(S), preserving paths and query parameters. Configure your MCP client:
 
 ```json
 {
@@ -30,6 +30,20 @@ Load `extension/` as an unpacked extension from `chrome://extensions`, then clic
 ```
 
 Use a source build. The npm registry name has historically been a holding package; this repository is the intended source. No model selection or API credentials are configured by LiveMCP.
+
+## Multiple browsers
+
+One hub supports multiple Chrome/Chromium profiles at the same time. Install the extension in each profile, give it a distinct name (for example “Work Chrome” or “Personal Chrome”), and enter the same hub URL.
+
+Agents call `list_browsers` then `select_browser` with a returned browser ID. Selection applies to that MCP session only and routes **all** its tools, including cookies and captures. Separate agents can select separate browsers. Rediscover tab IDs after changing browsers; numeric tab IDs are not globally unique across profiles.
+
+With one browser, the first browser action selects it automatically. With multiple browsers and no prior selection, the hub asks the agent to select one. A disconnected selected browser never falls back to another. Selection survives a hub reconnection for the lifetime of the agent process; new extension IDs persist in profile-local storage. Legacy extensions get temporary IDs until upgraded. Concurrent requests are correlated to their exact browser connection.
+
+### Remote URLs
+
+The URL must be a WebSocket endpoint, not an ordinary webpage. `https://host/path` becomes `wss://host/path`; `http://host/path` becomes `ws://host/path`. Paths and query parameters are passed through. URL fragments and embedded username/password are rejected. Connect saves edits and reconnects; log/status updates do not overwrite text being edited.
+
+The hub still binds loopback by default. Use a reverse proxy or a trusted tunnel for a remote `wss://` endpoint. `LIVEMCP_HOST` can explicitly change the bind address. TLS and authentication must be provided by the deployment; a URL alone does not secure the existing unauthenticated hub.
 
 ## Upgrade from v1
 
@@ -94,6 +108,7 @@ Pass this to `run_browser_actions`. Supported steps are `click`, `type`, `fill`,
 
 ### Other tools
 
+- Browsers: `list_browsers`, `select_browser`.
 - Tabs: `list_tabs`, `get_active_tab`, `switch_tab`, `close_tab`, `create_tab`, `list_frames`.
 - Content: `get_page_snapshot`, `get_page_content`, `get_selected_text`, `take_screenshot`.
 - Navigation: `navigate_to`, `navigate_and_wait`, `go_back`, `go_forward`, `reload_tab`.
@@ -118,11 +133,12 @@ The popup log retains 50 recent calls, including execution time and serialized r
 
 | Setting | Default |
 | --- | --- |
+| `LIVEMCP_HOST` (hub bind address) | `127.0.0.1` |
 | `LIVEMCP_PORT` (hub) | `17691` |
 | `LIVEMCP_HUB_SOCK` (hub and client) | `/tmp/livemcp-hub.sock` |
-| Extension popup port | `17691` |
+| Extension popup Server URL | Empty on a new install; saved legacy ports are preserved |
 
-If a port is occupied, the hub tries the next port; set that port in the extension popup. Restricted browser pages and some frames block script injection. Debugger capture can conflict with DevTools or another debugger. Closed shadow roots remain inaccessible. One extension/browser is connected per hub. Multi-call workflows are not exclusive leases on tabs; another user/session can change a tab between calls.
+If a port is occupied, the hub tries the next port; use the actual port in the extension’s Server URL. Restricted browser pages and some frames block script injection. Debugger capture can conflict with DevTools or another debugger. Closed shadow roots remain inaccessible. Multiple browser profiles can share one hub, with selection per agent session. Multi-call workflows are not exclusive leases on tabs; another user/session can change a tab between calls.
 
 ## Development and validation
 
@@ -142,7 +158,7 @@ See [OPTIMIZATIONS.md](OPTIMIZATIONS.md) for the implementation summary, measure
 
 The extension uses `tabs`, `activeTab`, `scripting`, `cookies`, `debugger`, `storage`, and `<all_urls>` access. It can interact with logged-in pages, read storage/cookies and page content, and inspect network/console data. Tool results are sent to the consuming MCP client and its model provider.
 
-The hub binds loopback and a Unix socket. The existing transport has no authentication; local processes able to connect can drive the browser. Socket permissions follow the process umask. A forwarded remote connection grants the remote client browser access. Use a profile appropriate for that access and disconnect when finished. Page content is untrusted data, not permission to expand the user's task.
+The hub binds loopback by default (or `LIVEMCP_HOST`) and a Unix socket. The existing transport has no authentication; local processes able to connect can drive the browser. Socket permissions follow the process umask. A forwarded remote connection grants the remote client browser access. Use a profile appropriate for that access and disconnect when finished. Page content is untrusted data, not permission to expand the user's task.
 
 ## License
 

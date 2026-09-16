@@ -1,4 +1,5 @@
-import { BRIDGE_ACTIONS, DEFAULT_WS_PORT, isBridgeRequest, type BridgeAction, type BridgeResponse } from "@livemcp/shared";
+import { normalizeConnectionUrl, savedConnectionUrl } from "./connectionUrl.js";
+import { BRIDGE_ACTIONS, isBridgeRequest, type BridgeAction, type BridgeResponse } from "@livemcp/shared";
 import { dispatch } from "./handlers/index.js";
 
 let socket: WebSocket | null = null;
@@ -27,13 +28,8 @@ function isKnownAction(a: string): a is BridgeAction {
   return (BRIDGE_ACTIONS as readonly string[]).includes(a);
 }
 
-async function readPort(): Promise<number> {
-  const { wsPort } = await chrome.storage.local.get(["wsPort"]);
-  return typeof wsPort === "number" && wsPort > 0 && wsPort < 65536 ? wsPort : DEFAULT_WS_PORT;
-}
-
-function send(res: BridgeResponse): number {
-  if (socket && socket.readyState === WebSocket.OPEN) {
+function send(res: BridgeResponse, source: WebSocket): number {
+  if (socket === source && socket.readyState === WebSocket.OPEN) {
     const payload =
       res.error !== undefined
         ? { id: res.id, error: res.error }
@@ -57,7 +53,7 @@ async function appendLog(entry: LogEntry): Promise<void> {
   await chrome.storage.local.set({ toolLog: log });
 }
 
-async function handleMessage(raw: string): Promise<void> {
+async function handleMessage(raw: string, source: WebSocket): Promise<void> {
   let data: unknown;
   try {
     data = JSON.parse(raw);
@@ -66,7 +62,7 @@ async function handleMessage(raw: string): Promise<void> {
   }
   if (!isBridgeRequest(data)) return;
   if (!isKnownAction(data.action)) {
-    send({ id: data.id, error: `Unknown action: ${data.action}` });
+    send({ id: data.id, error: `Unknown action: ${data.action}` }, source);
     void appendLog({ action: data.action, ok: false, error: "Unknown action", ms: 0, ts: Date.now() });
     return;
   }
@@ -74,12 +70,12 @@ async function handleMessage(raw: string): Promise<void> {
   try {
     const result = await dispatch(data.action, data.params ?? {});
     const ms = Math.round(performance.now() - t0);
-    const bytes = send({ id: data.id, result });
+    const bytes = send({ id: data.id, result }, source);
     void appendLog({ action: data.action, ok: true, ms, bytes, ts: Date.now() });
   } catch (e) {
     const ms = Math.round(performance.now() - t0);
     const msg = e instanceof Error ? e.message : String(e);
-    send({ id: data.id, error: msg });
+    send({ id: data.id, error: msg }, source);
     void appendLog({ action: data.action, ok: false, error: msg, ms, ts: Date.now() });
   }
 }
@@ -92,26 +88,33 @@ function scheduleReconnect(): void {
 }
 
 async function openSocket(): Promise<void> {
-  const { bridgeUserWantsConnect } = await chrome.storage.local.get(["bridgeUserWantsConnect"]);
-  if (!bridgeUserWantsConnect) return;
-
-  const port = await readPort();
-  const url = `ws://127.0.0.1:${port}`;
-  if (socket) {
-    socket.close();
-    socket = null;
-  }
   const myGen = ++socketGeneration;
+  stopKeepAlive();
+  if (socket) { socket.close(); socket = null; }
+  const store = await chrome.storage.local.get(['bridgeUserWantsConnect', 'wsUrl', 'wsPort', 'browserId', 'browserName']);
+  if (myGen !== socketGeneration || !store.bridgeUserWantsConnect) return;
+  let url: string;
+  try { url = normalizeConnectionUrl(savedConnectionUrl(store)); }
+  catch (e) {
+    await chrome.storage.local.set({ bridgeConnected: false, bridgeUserWantsConnect: false, bridgeLastError: String(e instanceof Error ? e.message : e) });
+    return;
+  }
+  await chrome.storage.local.set({ bridgeConnected: false });
+  if (myGen !== socketGeneration) return;
+  const browserId = typeof store.browserId === 'string' ? store.browserId : crypto.randomUUID();
+  if (!store.browserId) await chrome.storage.local.set({ browserId });
+  if (myGen !== socketGeneration) return;
   const ws = new WebSocket(url);
   socket = ws;
   ws.onopen = () => {
     if (myGen !== socketGeneration) return;
     attempt = 0;
+    ws.send(JSON.stringify({ type: 'hello', browserId, name: store.browserName || 'Chrome' }));
     startKeepAlive();
     void chrome.storage.local.set({ bridgeConnected: true, bridgeLastError: "" });
   };
   ws.onmessage = (ev) => {
-    if (typeof ev.data === "string") void handleMessage(ev.data);
+    if (myGen === socketGeneration && typeof ev.data === "string") void handleMessage(ev.data, ws);
   };
   ws.onerror = () => {
     if (myGen !== socketGeneration) return;
@@ -126,11 +129,12 @@ async function openSocket(): Promise<void> {
     void chrome.storage.local.set({ bridgeConnected: false });
     socket = null;
     const { bridgeUserWantsConnect: want } = await chrome.storage.local.get(["bridgeUserWantsConnect"]);
-    if (want) scheduleReconnect();
+    if (want && myGen === socketGeneration) scheduleReconnect();
   };
 }
 
 async function disconnectBridge(): Promise<void> {
+  socketGeneration += 1;
   stopKeepAlive();
   await chrome.storage.local.set({
     bridgeUserWantsConnect: false,
@@ -142,15 +146,15 @@ async function disconnectBridge(): Promise<void> {
     reconnectTimer = undefined;
   }
   attempt = 0;
-  socketGeneration += 1;
   if (socket) {
     socket.close();
     socket = null;
   }
 }
 
-async function connectBridge(): Promise<void> {
-  await chrome.storage.local.set({ bridgeUserWantsConnect: true, bridgeLastError: "" });
+async function connectBridge(url?: string, name?: string): Promise<void> {
+  const normalized = normalizeConnectionUrl(url ?? savedConnectionUrl(await chrome.storage.local.get(['wsUrl', 'wsPort'])));
+  await chrome.storage.local.set({ wsUrl: normalized, ...(name !== undefined ? { browserName: name.trim().slice(0,80) || "Chrome" } : {}), bridgeUserWantsConnect: true, bridgeLastError: "" });
   attempt = 0;
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
@@ -161,7 +165,7 @@ async function connectBridge(): Promise<void> {
 
 void chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  if (!changes.wsPort) return;
+  if (!changes.wsUrl && !changes.wsPort) return;
   void chrome.storage.local.get(["bridgeUserWantsConnect"]).then(({ bridgeUserWantsConnect }) => {
     if (!bridgeUserWantsConnect) return;
     attempt = 0;
@@ -173,7 +177,7 @@ void chrome.storage.onChanged.addListener((changes, area) => {
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && typeof msg === "object" && "type" in msg) {
     if (msg.type === "bridgeConnect") {
-      void connectBridge().then(() => sendResponse({ ok: true }));
+      void connectBridge(typeof msg.url === "string" ? msg.url : undefined, typeof msg.name === "string" ? msg.name : undefined).then(() => sendResponse({ ok: true })).catch(e => sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) }));
       return true;
     }
     if (msg.type === "bridgeDisconnect") {

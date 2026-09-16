@@ -6,10 +6,11 @@ import { registerAllTools } from "./tools/index.js";
 const bridge = createHubClient();
 
 const mcp = new McpServer(
-  { name: "livemcp", version: "2.0.0" },
+  { name: "livemcp", version: "2.1.0" },
   {
     instructions: `
 Control the user's Chrome with LiveMCP.
+- Use list_browsers and select_browser when multiple profiles are connected. Browser selection belongs to this agent session; rediscover tab IDs when switching browsers.
 - Discover the intended tab once, then retain tabId. Use list_frames for iframe IDs.
 - Inspect unfamiliar state with get_page_snapshot (compact DOM by default). Read prose with get_page_content format=text. Use scopes/query/paging instead of repeatedly dumping the page.
 - Use returned @refs or unique observed selectors. Refs persist within their document/frame and expire on navigation or removal. Never guess a ref. Refresh after STALE_REF.

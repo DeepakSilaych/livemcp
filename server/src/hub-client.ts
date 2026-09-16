@@ -7,6 +7,7 @@ type Pending = { resolve: (value: unknown) => void; reject: (reason: Error) => v
 export function createHubClient(requestTimeoutMs = 30000): Bridge {
   const sessionId = randomUUID(), pending = new Map<string, Pending>();
   let sock: Socket, hubConnected = false, extensionConnected = false, closed = false, attempt = 0;
+  let selectedBrowserId: string | undefined;
   let reconnect: ReturnType<typeof setTimeout> | undefined;
   const failPending = (message: string) => {
     for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error(message)); }
@@ -17,7 +18,7 @@ export function createHubClient(requestTimeoutMs = 30000): Bridge {
     if (closed) return;
     const connection = createConnection(HUB_SOCK); connection.setEncoding('utf8'); sock = connection;
     let buf = '';
-    connection.on('connect', () => { hubConnected = true; attempt = 0; send({ type: 'register', sessionId }); });
+    connection.on('connect', () => { hubConnected = true; attempt = 0; send({ type: 'register', sessionId, browserId: selectedBrowserId }); });
     connection.on('data', chunk => {
       buf += chunk.toString();
       if (buf.length > 32 * 1024 * 1024) { connection.destroy(new Error('Hub response exceeded 32 MB')); return; }
@@ -27,7 +28,7 @@ export function createHubClient(requestTimeoutMs = 30000): Bridge {
         let msg: any; try { msg = JSON.parse(line); } catch { continue; }
         if (msg.type === 'status') {
           extensionConnected = Boolean(msg.connected);
-          if (!extensionConnected) failPending('Extension disconnected; inspect browser state before retrying.');
+          if (typeof msg.browserId === 'string') selectedBrowserId = msg.browserId;
         } else if (msg.type === 'response') {
           const slot = pending.get(msg.id); if (!slot) continue;
           clearTimeout(slot.timer); pending.delete(msg.id);
@@ -43,8 +44,8 @@ export function createHubClient(requestTimeoutMs = 30000): Bridge {
     connection.on('error', error => { if (attempt === 0) process.stderr.write(`[livemcp] ${error.message}; reconnecting without replaying actions.\n`); });
   }
   connect();
-  const request = (action: BridgeAction, params: Record<string, unknown> = {}) => {
-    if (!hubConnected || !extensionConnected) return Promise.reject(new Error(!hubConnected ? 'Hub unavailable; start livemcp-hub. Connection will recover automatically.' : 'Chrome extension not connected to hub'));
+  const request = (action: BridgeAction | 'hub.listBrowsers' | 'hub.selectBrowser', params: Record<string, unknown> = {}) => {
+    if (!hubConnected || (!extensionConnected && !action.startsWith('hub.'))) return Promise.reject(new Error(!hubConnected ? 'Hub unavailable; start livemcp-hub. Connection will recover automatically.' : 'Chrome extension not connected to hub'));
     if (pending.size >= 100) return Promise.reject(new Error('Too many outstanding browser requests.'));
     const id = randomUUID();
     return new Promise<unknown>((resolve, reject) => {
@@ -53,5 +54,5 @@ export function createHubClient(requestTimeoutMs = 30000): Bridge {
     });
   };
   const close = async () => { closed = true; clearTimeout(reconnect); if (hubConnected) send({ type: 'unregister', sessionId }); failPending('Bridge closed'); sock.destroy(); };
-  return { request, close, isConnected: () => hubConnected && extensionConnected };
+  return { request, close, listBrowsers: () => request('hub.listBrowsers', {}), selectBrowser: browserId => request('hub.selectBrowser', { browserId }), isConnected: () => hubConnected && extensionConnected };
 }

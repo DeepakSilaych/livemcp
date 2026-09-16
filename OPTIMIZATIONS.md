@@ -20,7 +20,7 @@ The batch extension test fills an input, clicks a control and obtains final stat
 
 ## Validation scope
 
-Validated locally: **20 tests passed**, TypeScript checks and production builds passed, and `npm ci --ignore-scripts` completed with zero reported dependency vulnerabilities. The test run included a fresh Chromium profile loading the built extension.
+Validated locally: **24 tests passed**, TypeScript checks and production builds passed, and `npm ci --ignore-scripts` completed with zero reported dependency vulnerabilities. The test run included a fresh Chromium profile loading the built extension.
 
 Run `npm run typecheck`, `npm run build`, and `npm test`. The suite covers DOM behavior, tab ambiguity, waits/races, screenshot image shape and targeting, stale references, native setters, form ownership, scope/paging/deltas, capture limits, hub disconnect cleanup, and the built extension in isolated Chromium.
 

@@ -6,7 +6,7 @@ import { once } from 'node:events';
 
 test('built extension: real Chrome transport, refs, batch, iframe, images and errors', async () => {
   test.setTimeout(30000);
-  const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' }); await once(wss, 'listening');
+  const wss = new WebSocketServer({ port: 0, host: '127.0.0.1', path: '/browser' }); await once(wss, 'listening');
   const port = (wss.address() as any).port;
   const http = createServer((req, res) => {
     res.setHeader('Content-Type', 'text/html');
@@ -17,11 +17,27 @@ test('built extension: real Chrome transport, refs, batch, iframe, images and er
   const extension = resolve('extension');
   let context: any;
   try {
+    let hello: any; let requestUrl: string | undefined;
+    wss.on('connection', (ws, req) => { requestUrl = req.url; ws.once('message', raw => { hello = JSON.parse(String(raw)); }); });
     const connected = once(wss, 'connection');
     context = await chromium.launchPersistentContext('', { channel: 'chromium', headless: true, args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`] });
     const worker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
-    await worker.evaluate(async (port: number) => { await (globalThis as any).chrome.storage.local.set({ bridgeUserWantsConnect: true, wsPort: port }); }, port);
+    const popup = await context.newPage();
+    await popup.goto(worker.url().replace('/dist/background.js', '/popup/popup.html'));
+    await expect(popup.locator('#url')).toHaveValue('');
+    await popup.locator('#url').fill(`ws://127.0.0.1:${port}/browser?test=1`);
+    await popup.locator('#browserName').fill('Integration Chrome');
+    await popup.locator('#connect').click();
     const [ws] = await connected as [WebSocket];
+    await expect.poll(() => hello?.name).toBe('Integration Chrome');
+    expect(hello.browserId).toBeTruthy(); expect(requestUrl).toBe('/browser?test=1');
+    await expect(popup.locator('#status')).toHaveText('Connected');
+    await popup.locator('#url').fill('not a URL');
+    await worker.evaluate(async () => { await (globalThis as any).chrome.storage.local.set({ toolLog: [] }); });
+    await expect(popup.locator('#url')).toHaveValue('not a URL');
+    await popup.locator('#connect').click();
+    await expect(popup.locator('#urlError')).not.toBeEmpty();
+    expect(await worker.evaluate(async () => (await (globalThis as any).chrome.storage.local.get('wsUrl')).wsUrl)).toBe(`ws://127.0.0.1:${port}/browser?test=1`);
     const call = (action: string, params: any = {}) => new Promise<any>((resolve, reject) => {
       const id = crypto.randomUUID();
       const timer = setTimeout(() => { ws.off('message', listener); reject(new Error('test call timeout')); }, 8000);

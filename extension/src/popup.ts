@@ -1,6 +1,7 @@
-import { DEFAULT_WS_PORT } from "@livemcp/shared";
+import { normalizeConnectionUrl, savedConnectionUrl } from "./connectionUrl.js";
 
-const portEl = document.getElementById("port") as HTMLInputElement;
+const urlEl = document.getElementById("url") as HTMLInputElement;
+const nameEl = document.getElementById("browserName") as HTMLInputElement;
 const statusEl = document.getElementById("status") as HTMLSpanElement;
 const dotEl = document.getElementById("dot") as HTMLDivElement;
 const connectBtn = document.getElementById("connect") as HTMLButtonElement;
@@ -10,6 +11,9 @@ const clearLogBtn = document.getElementById("clearLog") as HTMLButtonElement;
 const totalCallsEl = document.getElementById("totalCalls") as HTMLDivElement;
 const okCallsEl = document.getElementById("okCalls") as HTMLDivElement;
 const errCallsEl = document.getElementById("errCalls") as HTMLDivElement;
+
+let editingUrl = false;
+const urlErrorEl = document.getElementById("urlError") as HTMLDivElement;
 
 type LogEntry = {
   action: string;
@@ -65,13 +69,15 @@ function esc(s: string): string {
 
 async function refresh(): Promise<void> {
   const store = await chrome.storage.local.get([
+    "wsUrl",
+    "browserName",
     "wsPort",
     "bridgeConnected",
     "bridgeLastError",
     "bridgeUserWantsConnect",
     "toolLog",
   ]);
-  portEl.value = String(typeof store.wsPort === "number" ? store.wsPort : DEFAULT_WS_PORT);
+  if (!editingUrl) { urlEl.value = savedConnectionUrl(store); nameEl.value = store.browserName ?? "Chrome"; }
 
   dotEl.className = "dot";
   if (store.bridgeConnected) {
@@ -88,26 +94,37 @@ async function refresh(): Promise<void> {
       ? `Idle — ${store.bridgeLastError}`
       : "Idle";
   }
-  connectBtn.disabled = Boolean(store.bridgeConnected || store.bridgeUserWantsConnect);
+  connectBtn.disabled = !editingUrl && Boolean(store.bridgeConnected || store.bridgeUserWantsConnect);
+  connectBtn.textContent = editingUrl && (store.bridgeConnected || store.bridgeUserWantsConnect) ? "Save & reconnect" : "Connect";
   disconnectBtn.disabled = !store.bridgeUserWantsConnect && !store.bridgeConnected;
 
   renderLog(Array.isArray(store.toolLog) ? store.toolLog : []);
 }
 
-portEl.addEventListener("change", async () => {
-  const n = Number(portEl.value);
-  if (!Number.isFinite(n) || n < 1 || n > 65535) {
-    await refresh();
-    return;
-  }
-  await chrome.storage.local.set({ wsPort: n });
+for (const input of [urlEl, nameEl]) input.addEventListener('input', () => {
+  editingUrl = true;
+  urlErrorEl.textContent = '';
+  urlEl.removeAttribute('aria-invalid');
+  connectBtn.disabled = false;
+  connectBtn.textContent = 'Connect';
 });
 
-connectBtn.addEventListener("click", async () => {
-  connectBtn.disabled = true;
-  await chrome.runtime.sendMessage({ type: "bridgeConnect" });
-  await refresh();
+connectBtn.addEventListener('click', async () => {
+  try {
+    const url = normalizeConnectionUrl(urlEl.value);
+    connectBtn.disabled = true;
+    const result = await chrome.runtime.sendMessage({ type: 'bridgeConnect', url, name: nameEl.value });
+    if (!result?.ok) throw new Error(result?.error ?? 'Could not connect.');
+    editingUrl = false;
+    urlErrorEl.textContent = '';
+    await refresh();
+  } catch (e) {
+    urlErrorEl.textContent = e instanceof Error ? e.message : String(e);
+    urlEl.setAttribute('aria-invalid', 'true');
+    connectBtn.disabled = false;
+  }
 });
+urlEl.addEventListener('keydown', event => { if (event.key === 'Enter') connectBtn.click(); });
 
 disconnectBtn.addEventListener("click", async () => {
   await chrome.runtime.sendMessage({ type: "bridgeDisconnect" });
