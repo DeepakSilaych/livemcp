@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 import { once } from 'node:events';
 
-test('built extension: real Chrome transport, refs, batch, iframe, images and errors', async () => {
+for (const authenticated of [false, true]) test(`built extension (${authenticated ? 'token' : 'local'}): real Chrome transport, refs, batch, iframe, images and errors`, async () => {
   test.setTimeout(30000);
   const wss = new WebSocketServer({ port: 0, host: '127.0.0.1', path: '/browser' }); await once(wss, 'listening');
   const port = (wss.address() as any).port;
@@ -18,7 +18,7 @@ test('built extension: real Chrome transport, refs, batch, iframe, images and er
   let context: any;
   try {
     let hello: any; let requestUrl: string | undefined;
-    wss.on('connection', (ws, req) => { requestUrl = req.url; ws.once('message', raw => { hello = JSON.parse(String(raw)); }); });
+    wss.on('connection', (ws, req) => { requestUrl = req.url; ws.once('message', raw => { hello = JSON.parse(String(raw)); if (authenticated) ws.send(JSON.stringify({ type: 'hello_ack' })); }); });
     const connected = once(wss, 'connection');
     context = await chromium.launchPersistentContext('', { channel: 'chromium', headless: true, args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`] });
     const worker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
@@ -27,9 +27,11 @@ test('built extension: real Chrome transport, refs, batch, iframe, images and er
     await expect(popup.locator('#url')).toHaveValue('');
     await popup.locator('#url').fill(`ws://127.0.0.1:${port}/browser?test=1`);
     await popup.locator('#browserName').fill('Integration Chrome');
+    if (authenticated) await popup.locator('#accessToken').fill('test-browser-token');
     await popup.locator('#connect').click();
     const [ws] = await connected as [WebSocket];
     await expect.poll(() => hello?.name).toBe('Integration Chrome');
+    expect(hello.token).toBe(authenticated ? 'test-browser-token' : undefined);
     expect(hello.browserId).toBeTruthy(); expect(requestUrl).toBe('/browser?test=1');
     await expect(popup.locator('#status')).toHaveText('Connected');
     await popup.locator('#url').fill('not a URL');
@@ -59,5 +61,10 @@ test('built extension: real Chrome transport, refs, batch, iframe, images and er
     const screenshot = await call('screenshot.capture', { tabId: tab.id }); expect(screenshot.dataUrl).toMatch(/^data:image\/png;base64,/);
     const wait = await call('navigate.andWait', { tabId: tab.id, url: url + '/next', waitUntil: 'domcontentloaded', waitFor: '#go' }); expect(wait.error).toBeUndefined();
     await expect(call('interact.click', { tabId: tab.id, selector: goRef })).rejects.toThrow('STALE_REF');
+    if (authenticated) {
+      ws.close(1008, 'Invalid browser access token');
+      await expect(popup.locator('#status')).toContainText('Invalid browser access token');
+      expect(await worker.evaluate(async () => (await (globalThis as any).chrome.storage.local.get('bridgeUserWantsConnect')).bridgeUserWantsConnect)).toBe(false);
+    }
   } finally { await context?.close(); for (const ws of wss.clients) ws.terminate(); await new Promise<void>(r => wss.close(() => r())); await new Promise<void>(r => http.close(() => r())); }
 });

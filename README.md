@@ -4,11 +4,11 @@
 
 <h1 align="center">LiveMCP</h1>
 
-Control your existing Chrome profile through MCP. LiveMCP uses a local hub and a Manifest V3 extension, preserving the browser's logged-in sessions. Version 2 focuses on efficient agent workflows: stable element references, bounded observations, action results that include state, and sequential batches.
+Control your existing Chrome profile through MCP. LiveMCP uses a local or hosted hub and a Manifest V3 extension, preserving the browser's logged-in sessions. Version 2 focuses on efficient agent workflows: stable element references, bounded observations, action results that include state, and sequential batches.
 
 ## Build and connect
 
-Requires Node.js 18+, Chrome/Chromium and a Unix-like host.
+Requires Node.js 18+ and Chrome/Chromium. Local stdio uses a Unix-like host. For hosted deployment, use the Node 22 Dockerfile and [hosting guide](HOSTING.md).
 
 ```sh
 npm ci
@@ -43,7 +43,7 @@ With one browser, the first browser action selects it automatically. With multip
 
 The URL must be a WebSocket endpoint, not an ordinary webpage. `https://host/path` becomes `wss://host/path`; `http://host/path` becomes `ws://host/path`. Paths and query parameters are passed through. URL fragments and embedded username/password are rejected. Connect saves edits and reconnects; log/status updates do not overwrite text being edited.
 
-The hub still binds loopback by default. Use a reverse proxy or a trusted tunnel for a remote `wss://` endpoint. `LIVEMCP_HOST` can explicitly change the bind address. TLS and authentication must be provided by the deployment; a URL alone does not secure the existing unauthenticated hub.
+The hub still binds loopback by default. Use a reverse proxy or a trusted tunnel for a remote `wss://` endpoint. `LIVEMCP_HOST` can explicitly change the bind address. Version 2.2 adds authenticated `/mcp` and `/browser` endpoints on one port. Configure a public HTTPS origin and access tokens; the reverse proxy provides TLS. See [HOSTING.md](HOSTING.md) for Docker, reverse proxy, agent URL configuration, account isolation, and local compatibility.
 
 ## Upgrade from v1
 
@@ -122,7 +122,9 @@ Network/console buffers retain at most 500 records each per captured tab. Reads 
 ## Architecture and recovery
 
 ```text
-MCP client → stdio session → Unix socket hub → WebSocket extension → Chrome APIs
+Local agent → stdio → Unix socket ─┐
+                                  ├→ one hub → /browser → extension → Chrome APIs
+Remote agent → HTTPS /mcp ─────────┘
 ```
 
 The hub is `server/src/hub.ts`; the older standalone `hub/` package is not used. Work is serialized per tab, with independent tabs able to progress concurrently. Screenshot calls are globally spaced to respect Chrome's capture limit. Snapshot screenshot checks reject a changed tab/document/observed DOM revision; they are not a guarantee of pixel-level atomicity.
@@ -136,9 +138,12 @@ The popup log retains 50 recent calls, including execution time and serialized r
 | `LIVEMCP_HOST` (hub bind address) | `127.0.0.1` |
 | `LIVEMCP_PORT` (hub) | `17691` |
 | `LIVEMCP_HUB_SOCK` (hub and client) | `/tmp/livemcp-hub.sock` |
+| `LIVEMCP_PUBLIC_URL` | Unset; set to the hosted HTTPS origin |
+| `LIVEMCP_TOKEN` / `LIVEMCP_ACCOUNTS` | Unset; required for hosted access |
+| `LIVEMCP_DISABLE_IPC` | Unset; use `1` for HTTP-only hosting |
 | Extension popup Server URL | Empty on a new install; saved legacy ports are preserved |
 
-If a port is occupied, the hub tries the next port; use the actual port in the extension’s Server URL. Restricted browser pages and some frames block script injection. Debugger capture can conflict with DevTools or another debugger. Closed shadow roots remain inaccessible. Multiple browser profiles can share one hub, with selection per agent session. Multi-call workflows are not exclusive leases on tabs; another user/session can change a tab between calls.
+If a port is occupied, the hub fails explicitly; free it or configure `LIVEMCP_PORT`. Restricted browser pages and some frames block script injection. Debugger capture can conflict with DevTools or another debugger. Closed shadow roots remain inaccessible. Multiple browser profiles can share one hub, with selection per agent session. Multi-call workflows are not exclusive leases on tabs; another user/session can change a tab between calls.
 
 ## Development and validation
 
@@ -158,7 +163,7 @@ See [OPTIMIZATIONS.md](OPTIMIZATIONS.md) for the implementation summary, measure
 
 The extension uses `tabs`, `activeTab`, `scripting`, `cookies`, `debugger`, `storage`, and `<all_urls>` access. It can interact with logged-in pages, read storage/cookies and page content, and inspect network/console data. Tool results are sent to the consuming MCP client and its model provider.
 
-The hub binds loopback by default (or `LIVEMCP_HOST`) and a Unix socket. The existing transport has no authentication; local processes able to connect can drive the browser. Socket permissions follow the process umask. A forwarded remote connection grants the remote client browser access. Use a profile appropriate for that access and disconnect when finished. Page content is untrusted data, not permission to expand the user's task.
+The hub binds loopback by default (or `LIVEMCP_HOST`) and a Unix socket. Unauthenticated mode is restricted to local binding; trusted local processes can drive the browser. Hosted access requires bearer tokens, and each account sees only its own browsers. Unix sockets use mode `0600`. See [hosting and authentication](HOSTING.md). A forwarded remote connection grants the remote client browser access. Use a profile appropriate for that access and disconnect when finished. Page content is untrusted data, not permission to expand the user's task.
 
 ## License
 

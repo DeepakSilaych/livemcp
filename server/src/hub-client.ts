@@ -18,7 +18,7 @@ export function createHubClient(requestTimeoutMs = 30000): Bridge {
     if (closed) return;
     const connection = createConnection(HUB_SOCK); connection.setEncoding('utf8'); sock = connection;
     let buf = '';
-    connection.on('connect', () => { hubConnected = true; attempt = 0; send({ type: 'register', sessionId, browserId: selectedBrowserId }); });
+    connection.on('connect', () => { hubConnected = true; attempt = 0; send({ type: 'register', sessionId, browserId: selectedBrowserId, token: process.env.LIVEMCP_TOKEN }); });
     connection.on('data', chunk => {
       buf += chunk.toString();
       if (buf.length > 32 * 1024 * 1024) { connection.destroy(new Error('Hub response exceeded 32 MB')); return; }

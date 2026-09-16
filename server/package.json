@@ -1,6 +1,6 @@
 {
   "name": "livemcp",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "MCP server that gives AI direct access to your real browser \u2014 tabs, cookies, session state, and all.",
   "type": "module",
   "license": "MIT",

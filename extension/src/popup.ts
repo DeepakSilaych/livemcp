@@ -1,6 +1,7 @@
 import { normalizeConnectionUrl, savedConnectionUrl } from "./connectionUrl.js";
 
 const urlEl = document.getElementById("url") as HTMLInputElement;
+const tokenEl = document.getElementById("accessToken") as HTMLInputElement;
 const nameEl = document.getElementById("browserName") as HTMLInputElement;
 const statusEl = document.getElementById("status") as HTMLSpanElement;
 const dotEl = document.getElementById("dot") as HTMLDivElement;
@@ -71,13 +72,14 @@ async function refresh(): Promise<void> {
   const store = await chrome.storage.local.get([
     "wsUrl",
     "browserName",
+    "accessToken",
     "wsPort",
     "bridgeConnected",
     "bridgeLastError",
     "bridgeUserWantsConnect",
     "toolLog",
   ]);
-  if (!editingUrl) { urlEl.value = savedConnectionUrl(store); nameEl.value = store.browserName ?? "Chrome"; }
+  if (!editingUrl) { urlEl.value = savedConnectionUrl(store); nameEl.value = store.browserName ?? "Chrome"; tokenEl.value = store.accessToken ?? ""; }
 
   dotEl.className = "dot";
   if (store.bridgeConnected) {
@@ -101,7 +103,7 @@ async function refresh(): Promise<void> {
   renderLog(Array.isArray(store.toolLog) ? store.toolLog : []);
 }
 
-for (const input of [urlEl, nameEl]) input.addEventListener('input', () => {
+for (const input of [urlEl, nameEl, tokenEl]) input.addEventListener('input', () => {
   editingUrl = true;
   urlErrorEl.textContent = '';
   urlEl.removeAttribute('aria-invalid');
@@ -113,7 +115,7 @@ connectBtn.addEventListener('click', async () => {
   try {
     const url = normalizeConnectionUrl(urlEl.value);
     connectBtn.disabled = true;
-    const result = await chrome.runtime.sendMessage({ type: 'bridgeConnect', url, name: nameEl.value });
+    const result = await chrome.runtime.sendMessage({ type: 'bridgeConnect', url, name: nameEl.value, token: tokenEl.value });
     if (!result?.ok) throw new Error(result?.error ?? 'Could not connect.');
     editingUrl = false;
     urlErrorEl.textContent = '';

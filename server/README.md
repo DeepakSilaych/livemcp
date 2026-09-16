@@ -1,5 +1,5 @@
-# LiveMCP 2.1
+# LiveMCP 2.2
 
-MCP browser tools backed by your Chrome extension and a shared local hub. Build from the [source repository](https://github.com/DeepakSilaych/livemcp). Version 2 introduces bounded observations, persistent element references, action-plus-state results, batches and transport recovery. Version 2.1 adds full connection URLs and multiple browsers with per-session selection. Upgrade both server and extension together.
+MCP browser tools backed by your Chrome extension and one local or hosted hub. Version 2.2 adds authenticated MCP Streamable HTTP at `/mcp`, browser WebSockets at `/browser`, and account isolation while preserving local stdio access.
 
-See the repository README for setup, tool contracts, migration notes and security boundaries.
+See the [source repository](https://github.com/DeepakSilaych/livemcp) and [hosting guide](https://github.com/DeepakSilaych/livemcp/blob/main/HOSTING.md) for setup. Upgrade server and extension together.

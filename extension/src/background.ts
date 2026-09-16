@@ -91,7 +91,7 @@ async function openSocket(): Promise<void> {
   const myGen = ++socketGeneration;
   stopKeepAlive();
   if (socket) { socket.close(); socket = null; }
-  const store = await chrome.storage.local.get(['bridgeUserWantsConnect', 'wsUrl', 'wsPort', 'browserId', 'browserName']);
+  const store = await chrome.storage.local.get(['bridgeUserWantsConnect', 'wsUrl', 'wsPort', 'browserId', 'browserName', 'accessToken']);
   if (myGen !== socketGeneration || !store.bridgeUserWantsConnect) return;
   let url: string;
   try { url = normalizeConnectionUrl(savedConnectionUrl(store)); }
@@ -104,17 +104,32 @@ async function openSocket(): Promise<void> {
   const browserId = typeof store.browserId === 'string' ? store.browserId : crypto.randomUUID();
   if (!store.browserId) await chrome.storage.local.set({ browserId });
   if (myGen !== socketGeneration) return;
+  const endpoint = new URL(url);
+  if (store.accessToken && endpoint.protocol === 'ws:' && !['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname)) {
+    await chrome.storage.local.set({ bridgeConnected: false, bridgeUserWantsConnect: false, bridgeLastError: 'Use wss:// for a remote hub with an access token.' });
+    return;
+  }
   const ws = new WebSocket(url);
+  let ready = !store.accessToken;
+  let handshake: ReturnType<typeof setTimeout> | undefined;
   socket = ws;
   ws.onopen = () => {
     if (myGen !== socketGeneration) return;
     attempt = 0;
-    ws.send(JSON.stringify({ type: 'hello', browserId, name: store.browserName || 'Chrome' }));
+    ws.send(JSON.stringify({ type: 'hello', browserId, name: store.browserName || 'Chrome', token: store.accessToken || undefined }));
     startKeepAlive();
-    void chrome.storage.local.set({ bridgeConnected: true, bridgeLastError: "" });
+    void chrome.storage.local.set({ bridgeConnected: ready, bridgeLastError: "" });
+    if (!ready) handshake = setTimeout(() => ws.close(1008, 'Hub did not acknowledge authentication'), 10000);
   };
   ws.onmessage = (ev) => {
-    if (myGen === socketGeneration && typeof ev.data === "string") void handleMessage(ev.data, ws);
+    if (myGen !== socketGeneration || typeof ev.data !== 'string') return;
+    let msg: any; try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg?.type === 'hello_ack') {
+      clearTimeout(handshake); ready = true;
+      void chrome.storage.local.set({ bridgeConnected: true, bridgeLastError: '' });
+      return;
+    }
+    if (ready) void handleMessage(ev.data, ws);
   };
   ws.onerror = () => {
     if (myGen !== socketGeneration) return;
@@ -123,11 +138,16 @@ async function openSocket(): Promise<void> {
       bridgeLastError: "WebSocket error (is the MCP server running?)",
     });
   };
-  ws.onclose = async () => {
+  ws.onclose = async (event) => {
+    clearTimeout(handshake);
     if (myGen !== socketGeneration) return;
     stopKeepAlive();
     void chrome.storage.local.set({ bridgeConnected: false });
     socket = null;
+    if (event.code === 1008) {
+      await chrome.storage.local.set({ bridgeUserWantsConnect: false, bridgeLastError: event.reason || 'Hub rejected connection. Check your access token.' });
+      return;
+    }
     const { bridgeUserWantsConnect: want } = await chrome.storage.local.get(["bridgeUserWantsConnect"]);
     if (want && myGen === socketGeneration) scheduleReconnect();
   };
@@ -152,9 +172,9 @@ async function disconnectBridge(): Promise<void> {
   }
 }
 
-async function connectBridge(url?: string, name?: string): Promise<void> {
+async function connectBridge(url?: string, name?: string, token?: string): Promise<void> {
   const normalized = normalizeConnectionUrl(url ?? savedConnectionUrl(await chrome.storage.local.get(['wsUrl', 'wsPort'])));
-  await chrome.storage.local.set({ wsUrl: normalized, ...(name !== undefined ? { browserName: name.trim().slice(0,80) || "Chrome" } : {}), bridgeUserWantsConnect: true, bridgeLastError: "" });
+  await chrome.storage.local.set({ wsUrl: normalized, ...(token !== undefined ? { accessToken: token.trim() } : {}), ...(name !== undefined ? { browserName: name.trim().slice(0,80) || "Chrome" } : {}), bridgeUserWantsConnect: true, bridgeLastError: "" });
   attempt = 0;
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
@@ -177,7 +197,7 @@ void chrome.storage.onChanged.addListener((changes, area) => {
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && typeof msg === "object" && "type" in msg) {
     if (msg.type === "bridgeConnect") {
-      void connectBridge(typeof msg.url === "string" ? msg.url : undefined, typeof msg.name === "string" ? msg.name : undefined).then(() => sendResponse({ ok: true })).catch(e => sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+      void connectBridge(typeof msg.url === "string" ? msg.url : undefined, typeof msg.name === "string" ? msg.name : undefined, typeof msg.token === "string" ? msg.token : undefined).then(() => sendResponse({ ok: true })).catch(e => sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) }));
       return true;
     }
     if (msg.type === "bridgeDisconnect") {
@@ -191,3 +211,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   return false;
 });
+
+void chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+// Restore the saved connection when Chrome restarts the service worker.
+void openSocket();

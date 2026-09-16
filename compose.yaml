@@ -1,0 +1,14 @@
+services:
+  hub:
+    build: .
+    restart: unless-stopped
+    environment:
+      LIVEMCP_TOKEN: ${LIVEMCP_TOKEN:?Set a random token of at least 32 characters in .env}
+      LIVEMCP_PUBLIC_URL: ${LIVEMCP_PUBLIC_URL:?Set your HTTPS hub origin in .env}
+    ports:
+      - "127.0.0.1:17691:17691"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

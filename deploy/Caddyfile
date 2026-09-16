@@ -1,0 +1,4 @@
+# Replace with your domain. Run Caddy on the Docker host; point DNS here.
+browser.example.com {
+    reverse_proxy 127.0.0.1:17691
+}
