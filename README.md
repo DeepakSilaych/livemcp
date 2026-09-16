@@ -1,4 +1,8 @@
-# LiveMCP
+<p align="center">
+  <img src="assets/logo.png" width="180" alt="LiveMCP logo" />
+</p>
+
+<h1 align="center">LiveMCP</h1>
 
 Control your existing Chrome profile through MCP. LiveMCP uses a local hub and a Manifest V3 extension, preserving the browser's logged-in sessions. Version 2 focuses on efficient agent workflows: stable element references, bounded observations, action results that include state, and sequential batches.
 
