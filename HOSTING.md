@@ -9,11 +9,11 @@ The hub routes actions; Chrome stays on your computer with your existing profile
 
 ## Docker + HTTPS
 
-1. Clone this repository and check out `v2.2.0` (or use the release source archive).
+1. Clone this repository and check out `v2.3.0` (or use the release source archive).
 2. Copy `.env.example` to `.env`. Set `LIVEMCP_PUBLIC_URL` to your HTTPS origin, without a path. Generate `LIVEMCP_TOKEN` with `openssl rand -hex 32` and paste it into `.env`.
 3. Run `docker compose up -d --build`. The container runs as a non-root user and exposes the hub only on the host's loopback port 17691.
 4. Point your domain at the host. Install Caddy on the host, replace the domain in `deploy/Caddyfile`, and use that configuration. Caddy provides HTTPS and forwards WebSocket upgrades. Open ports 80/443 for Caddy; keep 17691 private.
-5. Load the v2.2 extension, set **Server URL** to `wss://browser.example.com/browser`, set a useful **Browser name**, and paste the token into **Access token**. Click **Connect**.
+5. Load the v2.3 extension, set **Server URL** to `wss://browser.example.com/browser`, set a useful **Browser name**, and paste the token into **Access token**. Click **Connect**.
 6. Configure your agent's MCP client to use `https://browser.example.com/mcp` and an `Authorization: Bearer YOUR_TOKEN` request header.
 
 For clients using `mcpServers` with URL/header configuration (exact keys depend on the client):

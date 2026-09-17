@@ -12,7 +12,7 @@ export async function navigateTo(params: Record<string, unknown>): Promise<unkno
 export async function navigateAndWait(params: Record<string, unknown>): Promise<unknown> {
   const tabId = await resolveTabSpec(params as TabSpec);
   const pinned = { ...params, tabId };
-  const timeout = Math.min(25000, Number(params.timeout ?? 10000)), deadline = Date.now() + timeout;
+  const timeout = Math.min(60000, Number(params.timeout ?? 10000)), deadline = Date.now() + timeout;
   const before = params.waitUntil === "domcontentloaded" ? await runPage({ ...pinned, frameId: 0 }, "identity") : null;
   const wait = navigationWait(tabId, timeout);
   try {

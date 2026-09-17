@@ -17,6 +17,7 @@ test('hosted MCP authenticates, isolates owners, routes tools and closes session
   const hub = spawn(process.execPath, ['server/dist/hub.js'], { env: { ...process.env, LIVEMCP_PORT: String(port), LIVEMCP_HOST: '127.0.0.1', LIVEMCP_DISABLE_IPC: '1', LIVEMCP_ACCOUNTS: JSON.stringify(accounts) }, stdio: ['ignore','ignore','pipe'] });
   let logs = ''; hub.stderr.on('data', b => logs += b);
   const browsers: WebSocket[] = [], clients: Client[] = [];
+  let lastRequest: any;
   const endpoint = `http://127.0.0.1:${port}/mcp`;
   async function client(token: string) {
     const transport = new StreamableHTTPClientTransport(new URL(endpoint), { requestInit: { headers: { Authorization: `Bearer ${token}` } } });
@@ -26,7 +27,7 @@ test('hosted MCP authenticates, isolates owners, routes tools and closes session
     const ws = new WebSocket(`ws://127.0.0.1:${port}/browser`); browsers.push(ws); await once(ws,'open');
     const ack = once(ws,'message'); ws.send(JSON.stringify({ type: 'hello', browserId: 'same-profile-id', name, token }));
     expect(JSON.parse(String((await ack)[0])).type).toBe('hello_ack');
-    ws.on('message', raw => { const req = JSON.parse(String(raw)); if (req.id) ws.send(JSON.stringify({ id: req.id, result: [{ id: name === 'Alice' ? 1 : 2, title: name }] })); });
+    ws.on('message', raw => { const req = JSON.parse(String(raw)); lastRequest = req; if (req.id) ws.send(JSON.stringify({ id: req.id, result: [{ id: name === 'Alice' ? 1 : 2, title: name }] })); });
     return ws;
   }
   const content = (result: any) => JSON.parse(result.content[0].text);
@@ -46,6 +47,9 @@ test('hosted MCP authenticates, isolates owners, routes tools and closes session
     expect(JSON.stringify(await alice.c.callTool({ name: 'list_tabs', arguments: {} }))).toContain('Alice');
     expect(JSON.stringify(await bob.c.callTool({ name: 'list_tabs', arguments: {} }))).toContain('Bob');
     expect((await fetch(endpoint, { headers: { Authorization: `Bearer ${accounts[1].agentToken}`, 'Mcp-Session-Id': alice.transport.sessionId! } })).status).toBe(404);
+    await alice.c.callTool({name:'wait_for_text',arguments:{tabId:1,text:'Done',timeout:60000}});
+    expect(lastRequest.action).toBe('browser.wait');
+    expect(lastRequest.params.__deadline-Date.now()).toBeGreaterThan(60000);
     const id = alice.transport.sessionId!; await alice.transport.terminateSession();
     expect((await fetch(endpoint, { headers: { Authorization: `Bearer ${accounts[0].agentToken}`, 'Mcp-Session-Id': id } })).status).toBe(404);
     expect(logs).not.toContain(accounts[0].agentToken);

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
-import { BRIDGE_ACTIONS, isBridgeResponse } from '@livemcp/shared';
+import { BRIDGE_ACTIONS, isBridgeResponse, executionBudget } from '@livemcp/shared';
 import type { Bridge } from './bridge.js';
 
 type Browser = { id: string; name: string; ws: WebSocket; connectedAt: string; legacy: boolean };
@@ -80,9 +80,9 @@ export class BrowserRouter {
         if (!browser || browser.ws.readyState !== WebSocket.OPEN) throw new Error('Selected browser disconnected. Reconnect it or explicitly select_browser; no fallback to another browser.');
         if (this.pending.size >= 1000 || [...this.pending.values()].filter(p => p.session === s).length >= 100) throw new Error('Hub busy; retry later.');
         return new Promise((resolve, reject) => {
-          const id = randomUUID();
-          this.pending.set(id, { session: s, browser, resolve, reject, timer: setTimeout(() => this.finish(id, 'Bridge deadline exceeded; inspect state before retrying.'), 29000) });
-          browser.ws.send(JSON.stringify({ id, action, params: { ...params, __deadline: Date.now() + 28000 } }), err => { if (err) this.finish(id, 'Browser send failed; action outcome may be unknown.'); });
+          const id = randomUUID(), budget = executionBudget(action, params);
+          this.pending.set(id, { session: s, browser, resolve, reject, timer: setTimeout(() => this.finish(id, 'BRIDGE_TIMEOUT: Bridge deadline exceeded; inspect tab health and state before retrying.'), budget + 1000) });
+          browser.ws.send(JSON.stringify({ id, action, params: { ...params, __deadline: Date.now() + budget } }), err => { if (err) this.finish(id, 'Browser send failed; action outcome may be unknown.'); });
         });
       },
       close: async () => {

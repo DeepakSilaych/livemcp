@@ -49,7 +49,7 @@ export function registerNavigateTools(mcp: McpServer, bridge: Bridge): void {
         url: z.string(),
         waitUntil: z.enum(["domcontentloaded", "complete"]).optional().describe("Use domcontentloaded to proceed before background resources finish; default complete."),
         waitFor: z.string().optional().describe("CSS selector to wait for after page load"),
-        timeout: z.number().int().min(1).max(25000).optional().describe("Timeout in ms (default 10000)"),
+        timeout: z.number().int().min(1).max(60000).optional().describe("Timeout in ms (default 10000)"),
         ...tabSpecSchema,
         ...actionObservationSchema,
       },

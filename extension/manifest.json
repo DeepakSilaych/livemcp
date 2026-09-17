@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LiveMCP Bridge",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Bridge extension for LiveMCP \u2014 gives AI direct access to your real browser",
   "permissions": [
     "tabs",

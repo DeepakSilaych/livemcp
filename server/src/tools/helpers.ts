@@ -19,7 +19,9 @@ export const observationSchema = {
   since: z.string().optional().describe('Version of a retained observation. Returns a delta, or a full reset if unavailable.'),
 };
 export const actionObservationSchema = {
-  observe: z.boolean().optional().describe('Return compact state after acting; default true.'),
+  observe: z.boolean().optional().describe('Return compact state after acting; default true, at most 1500 text characters and 30 nodes unless overridden.'),
+  since: z.string().optional().describe('Explicit baseline version for changed-only action observation. Retain that baseline in context; omit after compaction.'),
+  maxNodes: z.number().int().min(1).max(500).optional().describe('Action observation node limit; default 30.'),
   observationSelector: z.string().optional().describe('Scope the returned state, e.g. a dialog or result table.'),
   maxChars: z.number().int().min(500).max(50000).optional(),
 };

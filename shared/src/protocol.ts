@@ -26,6 +26,11 @@ export const BRIDGE_ACTIONS = [
   "interact.fillForm",
   "interact.clickAndWait",
   "interact.scroll",
+  "interact.pressKey",
+  "interact.selectOption",
+  "browser.wait",
+  "browser.health",
+  "content.readState",
   "cookies.get",
   "cookies.getLocalStorage",
   "page.snapshot",
@@ -60,4 +65,11 @@ export function isBridgeResponse(v: unknown): v is BridgeResponse {
   if (!v || typeof v !== "object") return false;
   const o = v as Record<string, unknown>;
   return typeof o.id === "string" && ("result" in o || "error" in o);
+}
+
+/** Budget includes execution, not unbounded queueing. Transport gets a small grace. */
+export function executionBudget(action: string, params: Record<string, any>): number {
+  if (action === 'browser.batch') return Math.min(60000, Math.max(1000, Number(params.timeout ?? 60000)));
+  if (action === 'browser.wait' || action === 'interact.clickAndWait' || action === 'navigate.andWait') return Math.min(60000, Math.max(1000, Number(params.timeout ?? 10000))) + 2000;
+  return 28000;
 }

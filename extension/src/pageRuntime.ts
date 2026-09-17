@@ -7,6 +7,7 @@ export async function pageRuntime(command: string, args: Record<string, any>): P
     documentId: uid(), next: 0, ids: new WeakMap<Element, string>(),
     elements: new Map<string, Element>(), snapshots: new Map<string, any>(), revision: 0,
   };
+  state.anchors ??= new Map();
   if (!state.observer) {
     state.observer = new MutationObserver(() => state.revision++);
     state.observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
@@ -20,17 +21,34 @@ export async function pageRuntime(command: string, args: Record<string, any>): P
     }
     return el.getClientRects().length > 0;
   };
+  let cachedRoots: (Document | ShadowRoot)[] | undefined;
   const roots = (): (Document | ShadowRoot)[] => {
+    if (cachedRoots && command !== "wait") return cachedRoots;
     const result: (Document | ShadowRoot)[] = [document];
     for (let i = 0; i < result.length; i++) {
       for (const el of result[i].querySelectorAll('*')) if (el.shadowRoot) result.push(el.shadowRoot);
     }
-    return result;
+    cachedRoots = result; return result;
   };
-  const matches = (selector: string): Element[] => roots().flatMap(root => Array.from(root.querySelectorAll(selector)));
+  const validateSelector = (selector: string) => {
+    if (typeof selector !== 'string' || !selector.trim()) throw new Error('INVALID_SELECTOR: Use a nonempty native CSS selector or an observed @ref.');
+    if (selector.startsWith('@')) return;
+    try { document.createDocumentFragment().querySelector(selector); }
+    catch { throw new Error('INVALID_SELECTOR: Use native CSS or an observed @ref. Playwright selectors such as :has-text() and text= are unsupported. Read get_page_snapshot and use the returned ref.'); }
+  };
+  if (command === 'validateSelectors') {
+    for (const selector of args.selectors ?? []) validateSelector(selector);
+    return { validated: true };
+  }
+  const matches = (selector: string): Element[] => { validateSelector(selector); return roots().flatMap(root => Array.from(root.querySelectorAll(selector))); };
   const resolve = (selector: string): Element => {
     if (selector.startsWith('@')) {
-      const el = state.elements.get(selector);
+      let el = state.elements.get(selector);
+      if (el && !el.isConnected && state.anchors.has(selector)) {
+        const a = state.anchors.get(selector);
+        const candidates = matches(a.selector).filter(e => e.tagName === a.tag && e.getAttribute('type') === a.type && name(e) === a.name);
+        if (candidates.length === 1) { el = candidates[0]; state.elements.set(selector, el); state.ids.set(el, selector); }
+      }
       if (!el?.isConnected) throw new Error('STALE_REF: Refresh the observation and use a current reference.');
       return el;
     }
@@ -42,11 +60,16 @@ export async function pageRuntime(command: string, args: Record<string, any>): P
     let id = state.ids.get(el);
     if (!id) {
       if (state.elements.size >= 10000) {
-        for (const [key, value] of state.elements) if (!value.isConnected) state.elements.delete(key);
+        for (const [key, value] of state.elements) if (!value.isConnected) { state.elements.delete(key); state.anchors.delete(key); }
         if (state.elements.size >= 10000) throw new Error('REFERENCE_LIMIT: Reload this document to reset references.');
       }
       id = `@${state.documentId}:${++state.next}`;
       state.ids.set(el, id); state.elements.set(id, el);
+      for (const attr of ['id', 'data-testid', 'name']) {
+        const value = el.getAttribute(attr); if (!value) continue;
+        const selector = `${el.tagName.toLowerCase()}[${attr}="${CSS.escape(value)}"]`;
+        if (matches(selector).length === 1) { state.anchors.set(id, { selector, tag: el.tagName, type: el.getAttribute('type'), name: name(el) }); break; }
+      }
     }
     return id;
   };
@@ -70,7 +93,7 @@ export async function pageRuntime(command: string, args: Record<string, any>): P
   const valueOf = (el: any) => el.type === 'password' ? '[redacted]' : el.type === 'checkbox' || el.type === 'radio' ? el.checked : el.isContentEditable ? el.textContent : el.value;
   if (command === 'identity') return { documentId: state.documentId, url: location.href, title: document.title, readyState: document.readyState, revision: state.revision };
   if (command === 'wait') {
-    const timeout = Math.min(25000, Math.max(1, args.timeout ?? 5000));
+    const timeout = Math.min(60000, Math.max(1, args.timeout ?? 5000));
     return new Promise((done, reject) => {
       let observer: MutationObserver | undefined, timer: ReturnType<typeof setTimeout> | undefined, poll: ReturnType<typeof setInterval> | undefined;
       const cleanup = () => { observer?.disconnect(); clearTimeout(timer); clearInterval(poll); };
@@ -144,6 +167,45 @@ export async function pageRuntime(command: string, args: Record<string, any>): P
       return { ...base, mode: 'delta', since: args.since, order: JSON.stringify(old.lines.map((l: any) => l.ref)) === JSON.stringify(lines.map(l => l.ref)) ? undefined : lines.map(l => l.ref), nodes: lines.filter(l => previous.get(l.ref) !== l.text), removed: old.lines.filter((l: any) => !current.has(l.ref)).map((l: any) => l.ref) };
     }
     return { ...base, mode: 'full', reset: Boolean(args.since), nodes: lines };
+  }
+  if (command === 'readState') {
+    const el = resolve(args.selector) as HTMLElement;
+    const attrs: Record<string, string | null> = {};
+    for (const attr of (args.attributes ?? ['aria-expanded','aria-selected','aria-activedescendant','aria-busy']).slice(0,20)) attrs[attr] = el instanceof HTMLInputElement && el.type === 'password' && attr.toLowerCase() === 'value' ? '[redacted]' : el.getAttribute(attr)?.slice(0,500) ?? null;
+    return { ref: ref(el), tag: el.tagName.toLowerCase(), value: typeof valueOf(el) === 'string' ? String(valueOf(el)).slice(0,1000) : valueOf(el), text: (el.textContent ?? '').trim().slice(0, Math.min(4000,args.maxChars ?? 1000)), attributes: attrs, visible: visible(el), disabled: el.matches(':disabled'), readOnly: Boolean((el as HTMLInputElement).readOnly), checked: (el as HTMLInputElement).checked, selectedIndex: (el as HTMLSelectElement).selectedIndex };
+  }
+  if (command === 'findOption') {
+    if (args.text === undefined && args.value === undefined) throw new Error('INVALID_ARGUMENT: select_option requires text or value.');
+    const root = args.selector ? resolve(args.selector) : document.body;
+    if (root instanceof HTMLSelectElement) {
+      const options = Array.from(root.options).filter(o => args.value !== undefined ? o.value === args.value : o.textContent?.trim() === args.text);
+      if (options.length !== 1) throw new Error(options.length ? 'AMBIGUOUS_OPTION' : 'OPTION_NOT_FOUND');
+      check(root); if (options[0].disabled) throw new Error('DISABLED_OPTION');
+      root.value = options[0].value; root.dispatchEvent(new Event('input', { bubbles: true })); root.dispatchEvent(new Event('change', { bubbles: true }));
+      return { performed: true, value: root.value, method: 'native-select' };
+    }
+    const nodes = Array.from(root.querySelectorAll(args.optionSelector ?? '[role="option"],li')).filter(e => visible(e) && (e.textContent ?? '').trim() === args.text);
+    if (nodes.length !== 1) throw new Error(nodes.length ? 'AMBIGUOUS_OPTION: Scope the dropdown selector.' : 'OPTION_NOT_FOUND: Open the dropdown first; hidden options are not clicked.');
+    return { selector: ref(nodes[0]) };
+  }
+  if (command === 'prepareInput') {
+    const el = resolve(args.selector) as HTMLElement; check(el);
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    const r = el.getBoundingClientRect();
+    const x = (Math.max(0, r.left) + Math.min(innerWidth, r.right)) / 2;
+    const y = (Math.max(0, r.top) + Math.min(innerHeight, r.bottom)) / 2;
+    if (r.right <= 0 || r.bottom <= 0 || r.left >= innerWidth || r.top >= innerHeight) throw new Error('NOT_VISIBLE: Target could not be scrolled into view.');
+    let hit = document.elementFromPoint(x,y);
+    while (hit?.shadowRoot?.elementFromPoint(x,y) && hit.shadowRoot.elementFromPoint(x,y) !== hit) hit = hit.shadowRoot.elementFromPoint(x,y);
+    if (!hit || (hit !== el && !el.contains(hit))) throw new Error('TARGET_OCCLUDED: Another element covers the target. Close the overlay or select its option.');
+    if (args.focus) el.focus({ preventScroll: true });
+    return { x, y, documentId: state.documentId, ref: ref(el), readOnly: Boolean((el as HTMLInputElement).readOnly) };
+  }
+  if (command === 'checkWait') {
+    if (args.kind === 'url') return { ready: args.exact ? location.href === args.url : location.href.includes(args.url), url: location.href };
+    const root = args.selector ? resolve(args.selector) : document.body;
+    if (args.kind === 'text') { const text = (root as HTMLElement).innerText ?? ''; return { ready: args.exact ? text.trim() === args.text : text.includes(args.text) }; }
+    return { ready: visible(root) };
   }
   if (command === 'click') {
     const el = resolve(args.selector); check(el);

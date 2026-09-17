@@ -21,6 +21,10 @@ type TabCapture = {
 
 const tabState = new Map<number, TabCapture>();
 const attachedTabs = new Set<number>();
+const attaching = new Map<number, Promise<void>>();
+const inflight = new Map<number, Set<string>>();
+const activity = new Map<number, number>();
+const automationTabs = new Set<number>();
 
 function getState(tabId: number): TabCapture {
   let s = tabState.get(tabId);
@@ -43,7 +47,7 @@ function sendDebuggerCommand(tabId: number, method: string, commandParams?: obje
   });
 }
 
-async function attachTab(tabId: number): Promise<void> {
+async function attachOnce(tabId: number): Promise<void> {
   if (attachedTabs.has(tabId)) return;
   await new Promise<void>((resolve, reject) => {
     chrome.debugger.attach({ tabId }, "1.3", () => {
@@ -60,6 +64,35 @@ async function attachTab(tabId: number): Promise<void> {
   await sendDebuggerCommand(tabId, "Runtime.enable", {});
 }
 
+async function attachTab(tabId: number): Promise<void> {
+  bindListener(); getState(tabId);
+  if (attachedTabs.has(tabId)) return;
+  let task = attaching.get(tabId);
+  if (!task) { task = attachOnce(tabId).finally(() => attaching.delete(tabId)); attaching.set(tabId, task); }
+  return task;
+}
+export async function ensureDebugger(tabId: number) { automationTabs.add(tabId); await attachTab(tabId); }
+/** Never replay a failed input command: it may already have reached the page. */
+export async function command(tabId: number, method: string, params: object = {}): Promise<any> {
+  await ensureDebugger(tabId);
+  return sendDebuggerCommand(tabId, method, params);
+}
+export function debuggerHealth(tabId: number) { return { attached: attachedTabs.has(tabId), pendingRequests: inflight.get(tabId)?.size ?? 0 }; }
+export async function resetDebugger(tabId: number) {
+  const st = getState(tabId), networkOn = st.networkOn, consoleOn = st.consoleOn;
+  await detachTab(tabId); await attachTab(tabId); st.networkOn = networkOn; st.consoleOn = consoleOn; return debuggerHealth(tabId);
+}
+export async function waitNetworkIdle(tabId: number, timeout: number, quietMs = 500): Promise<any> {
+  await command(tabId, 'Network.enable');
+  const started = Date.now(), deadline = started + timeout;
+  while (Date.now() < deadline) {
+    if (!attachedTabs.has(tabId)) throw new Error('DEBUGGER_DETACHED: Network idle observation interrupted.');
+    if (!(inflight.get(tabId)?.size) && Date.now() - Math.max(started, activity.get(tabId) ?? 0) >= quietMs) return { ready: true, waitedMs: Date.now() - started, quietMs };
+    await new Promise(r => setTimeout(r, Math.min(100, Math.max(1, deadline - Date.now()))));
+  }
+  throw new Error('WAIT_TIMEOUT: Network did not become idle. Long polling can prevent idle; prefer text or URL readiness.');
+}
+
 async function detachTab(tabId: number): Promise<void> {
   if (!attachedTabs.has(tabId)) return;
   await new Promise<void>((resolve) => {
@@ -68,16 +101,25 @@ async function detachTab(tabId: number): Promise<void> {
   attachedTabs.delete(tabId);
 }
 
-let listenerBound = false;
+let boundDebugger: typeof chrome.debugger | undefined;
 
 function bindListener(): void {
-  if (listenerBound) return;
-  listenerBound = true;
+  if (boundDebugger === chrome.debugger) return;
+  boundDebugger = chrome.debugger;
   chrome.debugger.onEvent.addListener((source, method, params) => {
     const tabId = source.tabId;
     if (tabId == null) return;
     const st = tabState.get(tabId);
     if (!st) return;
+    if (method === 'Network.requestWillBeSent') {
+      const p = params as any;
+      // Streaming connections do not define page readiness.
+      if (!['WebSocket','EventSource'].includes(p.type)) {
+        const requests = inflight.get(tabId) ?? new Set<string>(); requests.add(p.requestId); inflight.set(tabId, requests); activity.set(tabId, Date.now());
+      }
+    } else if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
+      inflight.get(tabId)?.delete((params as any).requestId); activity.set(tabId, Date.now());
+    }
     if (st.networkOn && method === "Network.requestWillBeSent") {
       const p = params as { requestId: string; request?: { url: string; method: string } };
       const cur = st.requests.get(p.requestId) ?? { requestId: p.requestId };
@@ -125,13 +167,13 @@ function bindListener(): void {
   chrome.debugger.onDetach.addListener((source) => {
     const tabId = source.tabId;
     if (tabId != null) {
-      attachedTabs.delete(tabId);
+      attachedTabs.delete(tabId); inflight.delete(tabId); activity.delete(tabId);
       // Keep bounded records readable after capture stops.
       const st = tabState.get(tabId);
       if (st) { st.networkOn = false; st.consoleOn = false; }
     }
   });
-  chrome.tabs.onRemoved.addListener(id => { tabState.delete(id); attachedTabs.delete(id); });
+  chrome.tabs.onRemoved.addListener(id => { tabState.delete(id); attachedTabs.delete(id); inflight.delete(id); activity.delete(id); automationTabs.delete(id); });
 }
 
 export async function getBody(tabId: number, requestId: string, maxChars = 12000): Promise<unknown> {
@@ -156,7 +198,7 @@ export async function stopNetwork(tabId: number): Promise<{ ok: true }> {
   const st = tabState.get(tabId);
   if (st) {
     st.networkOn = false;
-    if (!st.consoleOn) {
+    if (!st.consoleOn && !automationTabs.has(tabId)) {
       await detachTab(tabId);
     }
   }
@@ -192,7 +234,7 @@ export async function stopConsole(tabId: number): Promise<{ ok: true }> {
   const st = tabState.get(tabId);
   if (st) {
     st.consoleOn = false;
-    if (!st.networkOn) {
+    if (!st.networkOn && !automationTabs.has(tabId)) {
       await detachTab(tabId);
     }
   }

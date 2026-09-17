@@ -63,7 +63,7 @@ Rebuild and reload **both** the extension and the MCP server, and restart the hu
 2. Call `get_page_snapshot` for controls, or `get_page_content` with `format:"text"` for prose. Scope to a result region when possible.
 3. Act using an observed `ref` in the `selector` argument. Actions return compact state; use it for the next decision.
 4. Use `fill_form` for multiple fields, or `run_browser_actions` for a short sequence whose targets are already known.
-5. Request a screenshot for visual tasks or ambiguous DOM state. Screenshots require the target tab to be active in its window and never silently switch tabs.
+5. Request a screenshot for visual tasks or ambiguous DOM state. Screenshots target the tab through CDP, including background tabs, without switching focus.
 6. Refresh references after navigation or `STALE_REF`. Inspect state after a timeout before repeating an action, especially submission.
 
 ### Observations
@@ -83,7 +83,7 @@ Rebuild and reload **both** the extension and the MCP server, and restart the hu
 
 Open shadow roots are traversed. Names include `aria-labelledby`, labels and ARIA attributes. Observations include selected/expanded/disabled/required states, table cells, prose, and up to 30 select options. Password control values are redacted in observations and fill results. Explicit raw HTML extraction remains raw markup.
 
-Element references persist within the same document/frame. Removing a node or navigating invalidates its references. Eight bounded observation baselines are retained per document. A delta has changed `nodes`, `removed` refs, and an optional new `order`. If the baseline is unavailable or the scope/options differ, a full observation with `reset:true` is returned. After client context compaction, request a full observation. Deltas describe the bounded observed region, not every offscreen part of a page. DOM equality does not imply that canvas/video pixels are unchanged.
+Element references persist within the same document/frame. Navigation invalidates references. A removed node can be rebound only to one replacement with a unique id/data-testid/name anchor and matching tag, type, and accessible name; ambiguous or changed identities remain stale. Eight bounded observation baselines are retained per document. A delta has changed `nodes`, `removed` refs, and an optional new `order`. If the baseline is unavailable or the scope/options differ, a full observation with `reset:true` is returned. After client context compaction, request a full observation. Deltas describe the bounded observed region, not every offscreen part of a page. DOM equality does not imply that canvas/video pixels are unchanged.
 
 ### Actions and batches
 
@@ -102,9 +102,32 @@ Example (replace example refs with actual observed values):
 }
 ```
 
-Pass this to `run_browser_actions`. Supported steps are `click`, `type`, `fill`, `scroll`, `clickAndWait`, `navigate`, `wait`, `observe`, and `content`. Batches contain 1–20 steps with a 24-second execution budget. They stop on error, report completed steps, and do not roll back. Do not batch through an unknown decision or reuse old document references after navigation. This is a typed action runner with persistent page references, not an arbitrary JavaScript REPL.
+Pass this to `run_browser_actions`, `press_key`, `select_option`. Supported steps are `click`, `type`, `fill`, `scroll`, `clickAndWait`, `navigate`, `wait`, `waitFor`, `pressKey`, `selectOption`, `observe`, and `content`. Batches contain 1–20 steps with a shared execution budget up to 60 seconds (default 60 seconds). They stop on error, report completed steps, and do not roll back. Do not batch through an unknown decision or reuse old document references after navigation. This is a typed action runner with persistent page references, not an arbitrary JavaScript REPL.
 
-`fill_form` validates targets before mutation, uses native input setters, checks form ownership, and reports partial outcomes and validation messages. `submitted:true` means submission was requested; verify the resulting application state to confirm completion. Synthetic events may still be unsuitable for custom controls requiring trusted input events.
+### Carrier workflows (v2.3)
+
+- `click_element` and `click_and_wait` default to trusted CDP mouse input. The target is scrolled into view and checked for overlays before clicking. `mode:"dom"` keeps synthetic input available explicitly.
+- `press_key` sends Enter, arrows, Tab, Escape, editing keys or a character. Optional `selector` focuses a known control first. Modifiers use a bitmask: Alt=1, Control=2, Meta=4, Shift=8.
+- `type_text mode:"trusted"` inserts text through CDP. `inputMethod:"keys"` sends individual key events. `allowReadonly:true` permits key input to custom readonly pickers without removing their readonly attribute; verify whether the component accepted it. This does not make ordinary readonly inputs editable.
+- `select_option` picks exact text inside an open, scoped dropdown and scrolls the option into view. Hidden items are rejected. For a native select, target it with `selector` and supply `text` or `value`.
+- `wait_for_text`, `wait_for_url`, and `wait_for_network_idle` support up to 60 seconds. Batch `wait` supports a visible selector; batch `waitFor` supports `kind: "selector" | "text" | "url" | "networkIdle"`. The batch and its steps share one deadline. Set the consuming client's request timeout above 65 seconds for long waits. Long polling may prevent network idle; requests already underway before debugger attachment may be unobserved. Prefer a result-specific text/URL condition.
+- `read_element_state` returns bounded values, selected/checked/readonly state, rendered visibility and selected attributes, including hidden inputs. Password values are redacted. It replaces small state-reading scripts; it does not expose arbitrary `evaluate_js` or call framework component methods. Arbitrary JavaScript cannot be guaranteed read-only.
+- Action observations default to **1,500 node-text characters and 30 nodes**, plus metadata. `observe:false` omits them. Set `since` to a retained matching action-observation version for a delta; request a full baseline after context compaction. No automatic baseline is shared between agents.
+- `get_tab_health` bypasses the tab queue to report responsiveness, active action, elapsed deadline, and debugger status. `recoverDebugger:true` reattaches only when the queue is idle and preserves enabled capture modes. It never cancels/replays a potentially completed mutation. `BRIDGE_TIMEOUT`, `QUEUE_TIMEOUT`, and `TAB_UNRESPONSIVE` distinguish transport, queue and page failures.
+
+Trusted pointer/keyboard input currently supports the **main frame**. Frame-local synthetic click/type remains available with `mode:"dom"`; frame observations are unchanged. Debugger attachment can fail when another debugger or browser policy owns the target. CDP screenshots capture the tab viewport, not a selected iframe in isolation.
+
+These paths are validated in Chromium fixtures, including `isTrusted`, readonly key handlers, offscreen dropdown choices, concurrent background screenshots and health probes during waits. No carrier-specific success rate or 3–5× end-to-end token reduction is claimed.
+
+### Recoverable errors and worker scheduling
+
+Batch `observe` and `content` steps accept **500–6000** characters per step. Their limits differ from standalone reads. Validate against `tools/list` before dispatch; do not copy a standalone observation budget into a batch. Invalid MCP arguments are rejected before any browser command is sent.
+
+Selectors are native CSS or observed `@refs`. Playwright `:has-text()`, `text=`, and locator expressions are unsupported. Use a scoped snapshot and the returned ref. Batch and click-and-wait selector syntax is checked before mutation, including selectors for later steps and waits. Preflight failures report `phase: "preflight"` and `actionMayHaveOccurred: false`; ref existence is checked at execution time because earlier steps can change the document.
+
+Wrappers must preserve MCP `isError` and its text/JSON content instead of replacing them with exception class names. Invalid arguments or a preflight rejection should allow corrected calls in the same session. A failure after completed batch steps must preserve those results: never replay the whole batch automatically. Disconnects or timeouts during a mutating action still require state inspection; a validation failure alone is not evidence that background tabs or a carrier login failed.
+
+`fill_form` validates targets before mutation, uses native input setters, checks form ownership, and reports partial outcomes and validation messages. `submitted:true` means submission was requested; verify the resulting application state to confirm completion. Clicks default to trusted CDP mouse events. `mode:"dom"` explicitly uses synthetic clicks. `fill_form` and default `type_text` still use native setters; use `type_text mode:"trusted"` for trusted browser input.
 
 ### Other tools
 
@@ -112,9 +135,10 @@ Pass this to `run_browser_actions`. Supported steps are `click`, `type`, `fill`,
 - Tabs: `list_tabs`, `get_active_tab`, `switch_tab`, `close_tab`, `create_tab`, `list_frames`.
 - Content: `get_page_snapshot`, `get_page_content`, `get_selected_text`, `take_screenshot`.
 - Navigation: `navigate_to`, `navigate_and_wait`, `go_back`, `go_forward`, `reload_tab`.
-- Interaction: `click_element`, `click_and_wait`, `type_text`, `fill_form`, `scroll_page`, `run_browser_actions`.
+- Interaction: `click_element`, `click_and_wait`, `type_text`, `fill_form`, `scroll_page`, `run_browser_actions`, `press_key`, `select_option`.
 - Network: `start_network_capture`, `stop_network_capture`, `get_captured_requests`, `get_response_body`.
 - Console: `start_console_capture`, `stop_console_capture`, `get_console_logs`.
+- Readiness and health: `wait_for_text`, `wait_for_url`, `wait_for_network_idle`, `get_tab_health`, `read_element_state`.
 - Storage: `get_cookies`, `get_local_storage`.
 
 Network/console buffers retain at most 500 records each per captured tab. Reads support `limit`, `offset`, `clearAfter`, and a URL or level filter, and report evictions/truncation. Record text is bounded, and read pages have a 12,000-character content budget. Stopping capture preserves buffered metadata until the tab closes or a new capture starts. Response bodies are fetched on demand while debugger access is available; large/non-text bodies may be truncated or omitted.
@@ -127,7 +151,7 @@ Local agent → stdio → Unix socket ─┐
 Remote agent → HTTPS /mcp ─────────┘
 ```
 
-The hub is `server/src/hub.ts`; the older standalone `hub/` package is not used. Work is serialized per tab, with independent tabs able to progress concurrently. Screenshot calls are globally spaced to respect Chrome's capture limit. Snapshot screenshot checks reject a changed tab/document/observed DOM revision; they are not a guarantee of pixel-level atomicity.
+The hub is `server/src/hub.ts`; the older standalone `hub/` package is not used. Work is serialized per tab, with independent tabs able to progress concurrently. CDP screenshots target individual tabs; different tabs can capture concurrently. Snapshot screenshot checks reject a changed tab/document/observed DOM revision; they are not a guarantee of pixel-level atomicity.
 
 Hub pending requests expire and are removed on session/extension disconnect. Session clients reconnect automatically without replaying actions. A queued operation whose deadline expired is rejected before execution. In-flight browser actions are not rolled back on disconnect; their outcome may be unknown.
 

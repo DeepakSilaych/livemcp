@@ -35,13 +35,13 @@ test('navigation listener catches completion during action callback', async () =
 });
 test('click navigation listener is installed before script runs', async () => {
   const chrome = mockChrome();
-  chrome.scripting.executeScript = (_options, cb) => { chrome.tabs.onUpdated.fire(1, { status: 'loading' }); chrome.tabs.onUpdated.fire(1, { status: 'complete' }); cb([{ result: { performed: true } }]); };
-  const result = await clickAndWait({ tabId: 1, selector: '#go', waitForNavigation: true, observe: false, timeout: 200 });
+  chrome.scripting.executeScript = (_options, cb) => { if (_options.args?.[0] === 'validateSelectors') { cb([{ result: { validated: true } }]); return; } chrome.tabs.onUpdated.fire(1, { status: 'loading' }); chrome.tabs.onUpdated.fire(1, { status: 'complete' }); cb([{ result: { performed: true } }]); };
+  const result = await clickAndWait({ tabId: 1, selector: '#go', mode: 'dom', waitForNavigation: true, observe: false, timeout: 200 });
   expect(result.error).toBeUndefined(); expect(chrome.tabs.onUpdated.listeners.size).toBe(0);
 });
 test('click timeout preserves uncertain outcome and cleans listeners', async () => {
   const chrome = mockChrome();
-  const result = await clickAndWait({ tabId: 1, selector: '#go', waitForNavigation: true, observe: false, timeout: 20 });
+  const result = await clickAndWait({ tabId: 1, selector: '#go', mode: 'dom', waitForNavigation: true, observe: false, timeout: 20 });
   expect(result.error).toContain('NAVIGATION_TIMEOUT'); expect(result.actionMayHaveOccurred).toBe(true); expect(chrome.tabs.onUpdated.listeners.size).toBe(0);
 });
 test('ambiguous tab discovery fails and exact ID bypasses discovery', async () => {
@@ -49,12 +49,28 @@ test('ambiguous tab discovery fails and exact ID bypasses discovery', async () =
   await expect(resolveTabSpec({ tabUrl: 'same.test' })).rejects.toThrow('Ambiguous');
   expect(await resolveTabSpec({ tabId: 2 })).toBe(2);
 });
-test('background screenshot is rejected instead of capturing wrong tab', async () => {
-  mockChrome(); await expect(capture({ tabId: 2 })).rejects.toThrow('SCREENSHOT_UNAVAILABLE');
+test('background screenshot targets CDP tab without switching focus', async () => {
+  const chrome = mockChrome(); const calls: any[] = [];
+  (chrome as any).debugger = { onEvent: event(), onDetach: event(), attach: (_t: any,_v: any,cb: any)=>cb(), sendCommand: (target: any,method: string,_params: any,cb: any)=>{ calls.push({target,method}); cb(method==='Page.captureScreenshot'?{data:'YWJj'}:{}); } };
+  const result = await capture({ tabId: 2 });
+  expect(result.dataUrl).toBe('data:image/png;base64,YWJj'); expect(calls.find(c=>c.method==='Page.captureScreenshot').target.tabId).toBe(2);
 });
 test('batch stops on failure and preserves completed steps', async () => {
   const chrome = mockChrome(); let calls = 0;
-  chrome.scripting.executeScript = (_options, cb) => { calls++; cb([{ result: calls === 2 ? { error: 'STALE_REF' } : { performed: true } }]); };
-  const result = await runBatch({ tabId: 1, steps: [{ action: 'click', selector: '#a' }, { action: 'click', selector: '#b' }, { action: 'click', selector: '#c' }], observe: false });
+  chrome.scripting.executeScript = (_options, cb) => { if (_options.args?.[0] === 'validateSelectors') { cb([{ result: { validated: true } }]); return; } calls++; cb([{ result: calls === 2 ? { error: 'STALE_REF' } : { performed: true } }]); };
+  const result = await runBatch({ tabId: 1, steps: [{ action: 'click', mode: 'dom', selector: '#a' }, { action: 'click', mode: 'dom', selector: '#b' }, { action: 'click', mode: 'dom', selector: '#c' }], observe: false });
   expect(calls).toBe(2); expect(result.completed).toBe(1); expect(result.results).toHaveLength(2); expect(result.error).toBe('STALE_REF');
+});
+
+test('batch selector preflight rejects a later invalid selector before any mutation', async () => {
+  const chrome = mockChrome(); const commands: string[] = [];
+  chrome.scripting.executeScript = (options, cb) => { commands.push(options.args[0]); cb([{ result: { __livemcpError: 'INVALID_SELECTOR: Use native CSS or an observed @ref.' } }]); };
+  const result = await runBatch({ tabId: 1, steps: [{ action: 'click', mode: 'dom', selector: '#first' }, { action: 'click', mode: 'dom', selector: "button:has-text('Log in')" }] });
+  expect(commands).toEqual(['validateSelectors']); expect(result.completed).toBe(0); expect(result.actionMayHaveOccurred).toBe(false); expect(result.error).toContain('INVALID_SELECTOR');
+});
+test('invalid click wait selector fails before clicking and installs no navigation listener', async () => {
+  const chrome = mockChrome(); const commands: string[] = [];
+  chrome.scripting.executeScript = (options, cb) => { commands.push(options.args[0]); cb([{ result: { __livemcpError: 'INVALID_SELECTOR: Use native CSS.' } }]); };
+  const result = await clickAndWait({ tabId: 1, selector: '#go', mode: 'dom', waitFor: 'text=Done', waitForNavigation: true });
+  expect(commands).toEqual(['validateSelectors']); expect(result.actionMayHaveOccurred).toBe(false); expect(chrome.tabs.onUpdated.listeners.size).toBe(0);
 });

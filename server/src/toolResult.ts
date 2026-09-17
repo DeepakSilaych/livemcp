@@ -4,7 +4,7 @@ export function okJson(data: unknown): CallToolResult {
   const failed = data && typeof data === 'object' && 'error' in data;
   return { ...okText(typeof data === 'string' ? data : JSON.stringify(data)), ...(failed ? { isError: true } : {}) };
 }
-export function errText(message: string): CallToolResult { return { ...okText(message), isError: true }; }
+export function errText(message: string): CallToolResult { const code = /\b([A-Z][A-Z_]{2,}):/.exec(message)?.[1]; return { ...okText(message), isError: true, ...(code ? { structuredContent: { error: message, code } } : {}) }; }
 export function imageResult(data: any): CallToolResult {
   const { screenshot, dataUrl, ...metadata } = data;
   const url = screenshot ?? dataUrl;

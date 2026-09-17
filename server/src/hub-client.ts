@@ -1,10 +1,10 @@
 import { createConnection, type Socket } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import type { BridgeAction } from '@livemcp/shared';
+import { executionBudget, type BridgeAction } from '@livemcp/shared';
 import type { Bridge } from './bridge.js';
 export const HUB_SOCK = process.env.LIVEMCP_HUB_SOCK ?? '/tmp/livemcp-hub.sock';
 type Pending = { resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> };
-export function createHubClient(requestTimeoutMs = 30000): Bridge {
+export function createHubClient(requestTimeoutMs = 0): Bridge {
   const sessionId = randomUUID(), pending = new Map<string, Pending>();
   let sock: Socket, hubConnected = false, extensionConnected = false, closed = false, attempt = 0;
   let selectedBrowserId: string | undefined;
@@ -49,7 +49,7 @@ export function createHubClient(requestTimeoutMs = 30000): Bridge {
     if (pending.size >= 100) return Promise.reject(new Error('Too many outstanding browser requests.'));
     const id = randomUUID();
     return new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(id); send({ type: 'cancel', sessionId, id }); reject(new Error('Bridge request timed out; inspect state before retrying.')); }, requestTimeoutMs);
+      const timer = setTimeout(() => { pending.delete(id); send({ type: 'cancel', sessionId, id }); reject(new Error('BRIDGE_TIMEOUT: Bridge request timed out; inspect tab health and state before retrying.')); }, requestTimeoutMs || executionBudget(action, params) + 3000);
       pending.set(id, { resolve, reject, timer }); send({ type: 'request', sessionId, id, action, params });
     });
   };

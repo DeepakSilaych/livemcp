@@ -84,3 +84,27 @@ test('hidden pre-rendered modal does not hide the main page observation', async 
   await page.setContent('<div role="dialog" aria-modal="true" hidden><button>Hidden modal</button></div><button>Main action</button>');
   const result = await invoke(page, 'observe'); expect(JSON.stringify(result)).toContain('Main action'); expect(JSON.stringify(result)).not.toContain('Hidden modal');
 });
+
+test('native selector validation reports actionable errors and accepts CSS text attributes', async ({ page }) => {
+  await page.setContent('<button data-label=":has-text(hello)">Log in</button>');
+  await expect(invoke(page, 'validateSelectors', { selectors: ["button:has-text('Log in')"] })).rejects.toThrow('INVALID_SELECTOR');
+  await expect(invoke(page, 'click', { selector: 'text=Log in' })).rejects.toThrow('Playwright');
+  expect(await invoke(page, 'validateSelectors', { selectors: ['button[data-label=":has-text(hello)"]', '@future:1'] })).toEqual({ validated: true });
+});
+
+test('refs recover unique equivalent replacements but reject ambiguous or changed identities', async ({ page }) => {
+  await page.setContent('<button id="stable">Continue</button>');
+  const snapshot = await invoke(page,'observe'); const ref = snapshot.nodes.find((n:any)=>n.text.includes('Continue')).ref;
+  await page.evaluate(()=>{ document.querySelector('#stable')!.outerHTML='<button id="stable">Continue</button>'; });
+  expect((await invoke(page,'readState',{selector:ref})).text).toBe('Continue');
+  await page.evaluate(()=>{ document.body.innerHTML='<button id="stable">Delete account</button>'; });
+  await expect(invoke(page,'click',{selector:ref})).rejects.toThrow('STALE_REF');
+  await page.evaluate(()=>{ document.body.innerHTML='<button id="stable">Continue</button><button id="stable">Continue</button>'; });
+  await expect(invoke(page,'click',{selector:ref})).rejects.toThrow('STALE_REF');
+});
+test('bounded state reads include hidden values and redact password value attributes', async ({page})=>{
+  await page.setContent('<input id="hidden" type="hidden" value="carrier-code"><input id="password" type="password" value="secret">');
+  expect((await invoke(page,'readState',{selector:'#hidden'})).value).toBe('carrier-code');
+  const password = await invoke(page,'readState',{selector:'#password',attributes:['value']});
+  expect(JSON.stringify(password)).not.toContain('secret');expect(password.value).toBe('[redacted]');
+});
